@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Runtime (mission state — never commit user mission artifacts)
+missions/
+user_messages/
+processed_messages/
+egress.jsonl
+
+# Local config (API keys, etc.)
+.env
+.env.local
+*.secret
+
+# Build cache (used by sandbox, never commit)
+.cache/
+target-cache/
+sccache/
+
+# Memory store (per-repo .maf-coder/ is fine to commit selectively, but defaults out)
+.maf-coder/memory.db
+.maf-coder/memory.index/
+
+# Claude Code / Cursor personal overrides (committed: AGENTS.md, CLAUDE.md, .claude/settings.json)
+CLAUDE.local.md
+AGENTS.local.md
+.claude/settings.local.json
+.cursor/settings.local.json

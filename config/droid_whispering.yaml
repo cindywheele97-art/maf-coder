@@ -1,0 +1,232 @@
+# MAF-Coder Droid Whispering Configuration
+# ===========================================
+#
+# 每个 Agent 角色独立选型，体现"Droid Whispering"原则：
+#   - Planner 系（Orchestrator）：慢思考、严谨推理、规划能力
+#   - Coder 系：Rust 代码流畅性 + 工具调用稳定 + 长上下文
+#   - Validator 系：精准指令遵循 + **强制与 Coder 异供应商**（避免训练数据偏见）
+#   - Research 系：长上下文、检索综合、引用纪律
+#
+# 所有模型 ID 通过 LiteLLM 字符串格式表达，切换供应商只改这份文件，不改代码。
+#
+# 模型选型基于 2026 年 5 月时点的能力评估，定期复核。
+
+version: 1
+
+# ============================================================================
+# 角色级模型路由
+# ============================================================================
+roles:
+
+  orchestrator:
+    # 规划质量决定整个 mission 的下限。这是唯一愿意付溢价用最强推理模型的位置。
+    primary:
+      model: anthropic/claude-opus-4-7
+      temperature: 0.2
+      max_tokens: 16000
+    fallback:
+      - model: openai/gpt-5
+        temperature: 0.2
+        max_tokens: 16000
+    notes: |
+      - 主负责：plan.md 起草 / validation_contract.yaml 签发 / tasks DAG / mission 路由
+      - 必须能产出"在没有具体实现思路前就可验证"的断言
+      - 长会话场景下需要善用阶段总结 + handoff 重启上下文
+
+  research_worker:
+    # 长上下文 + 高吞吐量需求。允许并行多个 Research Worker，所以每次调用成本控制重要。
+    primary:
+      model: anthropic/claude-sonnet-4-6
+      temperature: 0.2
+      max_tokens: 12000
+    fallback:
+      - model: openai/gpt-5
+        temperature: 0.2
+        max_tokens: 12000
+    notes: |
+      - 严格引用：每条结论必须附 source_url + retrieved_at
+      - 外部抓取的内容必须经过 sanitizer 后才能进入上下文
+      - 不直接给 Coder 提供原文，只提供综合判断 + 引用
+
+  coder_worker:
+    # Rust 代码流畅性 + tool calling 稳定性。Anthropic 在 Rust 代码生成上长期领先。
+    primary:
+      model: anthropic/claude-sonnet-4-6
+      temperature: 0.3
+      max_tokens: 32000
+    fallback:
+      - model: anthropic/claude-opus-4-7    # 主模型失败时升级到 Opus，不切换供应商
+        temperature: 0.3
+        max_tokens: 32000
+      - model: openai/gpt-5
+        temperature: 0.3
+        max_tokens: 32000
+    notes: |
+      - 强制：clippy -D warnings 通过、fmt clean、check 至少跑一次
+      - 写实现 + 写测试一体（不拆 Test Worker，靠 ReviewValidator 的对抗 sub-agent 补强）
+      - 修改 Cargo.lock / 引入 unsafe 必须在 handoff 中解释
+
+  security_worker:
+    # 模式识别 + 规范遵循。可以用便宜模型，因为主要工作是把工具输出转结构化判定。
+    primary:
+      model: openai/gpt-5
+      temperature: 0.0
+      max_tokens: 8000
+    fallback:
+      - model: google/gemini-2.5-pro
+        temperature: 0.0
+        max_tokens: 8000
+    notes: |
+      - 主工具：cargo-audit / cargo-deny / cargo-geiger / gitleaks / trufflehog
+      - 输出严重度分级：Critical 阻塞 / High 要求修复 / Medium 写入 risk_register / Low PR 描述说明
+      - 与 Coder 并行触发，不阻塞主路径
+
+  review_validator:
+    # 精准指令遵循 + **强制非 Anthropic**（与 Coder 异供应商）。
+    # 这是整个框架最重要的供应商约束——同家族模型会共享盲点。
+    primary:
+      model: openai/gpt-5
+      temperature: 0.0
+      max_tokens: 8000
+    fallback:
+      - model: google/gemini-2.5-pro
+        temperature: 0.0
+        max_tokens: 8000
+    constraints:
+      forbidden_providers: [anthropic]    # 强约束：不允许与 Coder 同供应商
+    notes: |
+      - 跑 cargo 全套 gate（build/test/clippy/fmt/nextest）
+      - 失败时必须输出 precise reason（具体 file:line + assertion）
+      - 与 Coder 强制异供应商
+
+  adversarial_subagent:
+    # 一次性对抗 sub-agent。**强制与 Coder 异供应商**，且尽量与 ReviewValidator 也不同。
+    # 这样形成"Coder vs 两个不同家族的对抗者"格局。
+    primary:
+      model: google/gemini-2.5-pro
+      temperature: 0.0
+      max_tokens: 6000
+    fallback:
+      - model: openai/gpt-5
+        temperature: 0.0
+        max_tokens: 6000
+    constraints:
+      forbidden_providers: [anthropic]
+    notes: |
+      - 上下文里只放 patch + contract + research notes，不放 Coder 的实现思路
+      - 任务：判断 patch 是否覆盖 contract 全部断言 + 生成 proptest 草稿
+      - 一次性 sub-agent，跑完即销毁，不在会话中累积上下文
+
+  behavior_validator:
+    # 多模态判断输出（stdout/stderr/JSON response/可能的截图分析）。
+    # 暂不严格要求与 Coder 异供应商，但鼓励。
+    primary:
+      model: openai/gpt-5
+      temperature: 0.1
+      max_tokens: 8000
+    fallback:
+      - model: anthropic/claude-opus-4-7
+        temperature: 0.1
+        max_tokens: 8000
+    notes: |
+      - Headless 探针（CLI/service/library/embedded/wasm 5 种策略）
+      - 不做浏览器自动化（v3 范围外）
+      - Review PASS 之后才触发，与 Review 严格串行
+
+# ============================================================================
+# Mission 级预算守门
+# ============================================================================
+budgets:
+  # 用户给的"预算十位数"是 alert_threshold，不是硬上限。
+  # 默认 $100，可在 mission 启动时通过 --budget-alert $X 覆盖。
+  default_alert_threshold_usd: 100.0
+
+  # 比例触发器
+  thresholds:
+    annotate: 0.50           # 50% 时 status report 标注
+    warn: 0.80               # 80% 时立即推送 + 进入谨慎模式
+    pause: 1.00              # 100% 时暂停 + 升级 Human Gate
+    force_stop: 1.50         # 150% 时强制停止
+
+  # 谨慎模式行为
+  cost_conscious_mode:
+    disable_parallel_research: true
+    validator_use_fallback: true
+    max_retries_per_task: 1
+    max_concurrent_workers: 1
+
+  # 每 task 默认上限（防止单 task 失控）
+  per_task:
+    max_tokens_in: 100000
+    max_tokens_out: 32000
+    max_runtime_sec: 600
+
+  # 每 mission wall-clock 软预算（用于 status report 估算，不强约束）
+  per_mission:
+    expected_wall_clock_hours: 24    # 默认 24h，多天任务可覆盖到 168h（7d）
+
+# ============================================================================
+# 联网治理（与 §7 净化层配合）
+# ============================================================================
+network:
+  # 完全开放策略，但所有外部请求强制日志
+  policy: open
+
+  # 速率限制（每 mission 级）
+  rate_limits:
+    "crates.io": 60       # req/min
+    "docs.rs": 60
+    "api.github.com": 30
+    "raw.githubusercontent.com": 60
+    default: 10           # 其它域名默认低速率
+
+  # 流量预算
+  max_requests_per_mission: 1000
+
+  # 黑名单
+  forbidden_patterns:
+    - "*.exe"
+    - "*.dll"
+    - "*.so"
+    - "*.dylib"
+
+  # 强制日志路径
+  egress_log: "missions/{mission_id}/egress.jsonl"
+
+# ============================================================================
+# Tracing 与可观察性
+# ============================================================================
+tracing:
+  # OpenAI Agents SDK 原生 tracing + 本地 jsonl 双写
+  openai_sdk_tracing: true
+  local_jsonl_path: "missions/{mission_id}/events.jsonl"
+  sentry_dsn: null              # 用户可选启用
+  capture_full_prompts: false   # 隐私默认关，调试时单独开
+
+# ============================================================================
+# 模型可用性 smoke test
+# ----------------------------------------------------------------------------
+# Phase A 必须跑这套 smoke test，验证三供应商在 LiteLLM 路径下的 tool calling 稳定性
+# ============================================================================
+smoke_test:
+  enabled: true
+  targets:
+    - role: orchestrator
+      primary_only: false
+    - role: coder_worker
+      primary_only: false
+    - role: review_validator
+      primary_only: false
+    - role: adversarial_subagent
+      primary_only: false
+  test_cases:
+    - name: simple_completion
+      prompt: "Reply with exactly: PONG"
+      expect_contains: "PONG"
+    - name: tool_calling
+      prompt: "Call the test_echo tool with the argument 'hello'."
+      expect_tool_call: test_echo
+    - name: structured_output
+      prompt: "Return a JSON object with keys 'status' and 'count'."
+      expect_json_keys: [status, count]
+  pass_criterion: 5/5     # 每个 model 在每个 test case 上 5 次重试至少 5 次成功
