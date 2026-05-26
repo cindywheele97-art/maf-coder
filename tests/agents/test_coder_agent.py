@@ -4,6 +4,7 @@ Verifies the agent shell stitches together prompt + tools + run, by stubbing
 out `_execute_sdk` to invoke a couple of tools as a real LLM-driven run
 would.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -50,8 +51,10 @@ def store(tmp_path: Path) -> ArtifactStore:
 async def sandbox(tmp_path: Path):
     sb = LocalShellSandbox()
     await sb.start(workspace_mount=tmp_path / "ws")
-    await sb.exec("git init -q -b main && git config user.email t@t && git config user.name t",
-                  cwd="/workspace")
+    await sb.exec(
+        "git init -q -b main && git config user.email t@t && git config user.name t",
+        cwd="/workspace",
+    )
     await sb.exec("touch initial && git add -A && git commit -q -m initial", cwd="/workspace")
     try:
         yield sb
@@ -121,7 +124,10 @@ class TestCoderWorkerAgent:
     def test_role_and_prompt(self, prompt: Path, store, router, sandbox) -> None:
         agent = _ScriptedCoder(
             prompt_path=prompt,
-            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
         )
         assert agent.role == Role.CODER_WORKER
 
@@ -129,7 +135,10 @@ class TestCoderWorkerAgent:
     async def test_end_to_end_run(self, prompt: Path, store, router, sandbox) -> None:
         agent = _ScriptedCoder(
             prompt_path=prompt,
-            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
         )
         result = await agent.run(_task(), mission_id="m-coder")
         assert result.errored is False

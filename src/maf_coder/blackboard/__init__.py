@@ -21,8 +21,8 @@ __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
     "ContractAlreadyLockedError",
-    "PathEscapeError",
     "Event",
     "EventKind",
     "EventLog",
+    "PathEscapeError",
 ]

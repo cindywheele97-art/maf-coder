@@ -26,15 +26,17 @@ Non-responsibilities (kept elsewhere):
 - Memory / retrieval: see future memory/ package (Phase F). ArtifactStore deals
   with the current mission only.
 """
+
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel
@@ -165,10 +167,8 @@ def _atomic_write(target: Path, content: bytes) -> None:
         os.replace(tmp_path, target)
     except Exception:
         # Best-effort cleanup of orphan tmp file
-        try:
+        with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
-        except FileNotFoundError:
-            pass
         raise
 
 
@@ -200,7 +200,10 @@ class ArtifactStore:
         self.missions_root = Path(missions_root).resolve()
         self.mission_dir = (self.missions_root / mission_id).resolve()
         # Ensure mission_dir is actually under missions_root (defense in depth)
-        if self.missions_root not in self.mission_dir.parents and self.mission_dir != self.missions_root:
+        if (
+            self.missions_root not in self.mission_dir.parents
+            and self.mission_dir != self.missions_root
+        ):
             raise PathEscapeError(
                 f"mission_dir {self.mission_dir} not under missions_root {self.missions_root}"
             )
@@ -213,13 +216,8 @@ class ArtifactStore:
         """Resolve relpath inside mission_dir. Reject any escape attempt."""
         candidate = (self.mission_dir / relpath).resolve()
         # parents excludes the path itself, so include direct equality check
-        if (
-            self.mission_dir not in candidate.parents
-            and candidate != self.mission_dir
-        ):
-            raise PathEscapeError(
-                f"relpath {relpath!r} resolves outside mission dir: {candidate}"
-            )
+        if self.mission_dir not in candidate.parents and candidate != self.mission_dir:
+            raise PathEscapeError(f"relpath {relpath!r} resolves outside mission dir: {candidate}")
         return candidate
 
     # -- Generic read/write ------------------------------------------------
@@ -235,7 +233,7 @@ class ArtifactStore:
     def read_text(self, relpath: str) -> str:
         return self._resolve(relpath).read_text(encoding="utf-8")
 
-    def write_json(self, relpath: str, data: dict | list | BaseModel) -> Path:
+    def write_json(self, relpath: str, data: dict[str, Any] | list[Any] | BaseModel) -> Path:
         if isinstance(data, BaseModel):
             payload = json.dumps(
                 data.model_dump(mode="json", exclude=_computed_field_names(type(data))),
@@ -247,14 +245,13 @@ class ArtifactStore:
             payload = json.dumps(data, indent=2, ensure_ascii=False, default=str)
         return self.write_text(relpath, payload + "\n")
 
-    def read_json(self, relpath: str) -> dict | list:
-        return json.loads(self.read_text(relpath))
+    def read_json(self, relpath: str) -> dict[str, Any] | list[Any]:
+        result: dict[str, Any] | list[Any] = json.loads(self.read_text(relpath))
+        return result
 
-    def write_yaml(self, relpath: str, data: dict | BaseModel) -> Path:
+    def write_yaml(self, relpath: str, data: dict[str, Any] | BaseModel) -> Path:
         if isinstance(data, BaseModel):
-            payload_dict = data.model_dump(
-                mode="json", exclude=_computed_field_names(type(data))
-            )
+            payload_dict = data.model_dump(mode="json", exclude=_computed_field_names(type(data)))
         else:
             payload_dict = data
         return self.write_text(
@@ -264,7 +261,7 @@ class ArtifactStore:
             ),
         )
 
-    def read_yaml(self, relpath: str) -> dict:
+    def read_yaml(self, relpath: str) -> dict[str, Any]:
         return yaml.safe_load(self.read_text(relpath)) or {}
 
     def list_dir(self, relpath: str) -> list[Path]:
@@ -355,9 +352,7 @@ class ArtifactStore:
     def save_status_report(self, report: StatusReport) -> tuple[Path, Path]:
         """Save both the machine-readable .json and the rendered .md."""
         n = report.report_number
-        json_path = self.write_json(
-            f"{_DIRS['status_reports']}/status_{n:04d}.json", report
-        )
+        json_path = self.write_json(f"{_DIRS['status_reports']}/status_{n:04d}.json", report)
         md_path = self.write_text(
             f"{_DIRS['status_reports']}/status_{n:04d}.md",
             _render_status_report_markdown(report),
@@ -366,9 +361,7 @@ class ArtifactStore:
 
     def save_checkpoint(self, checkpoint: Checkpoint) -> Path:
         m = checkpoint.milestone_id
-        return self.write_json(
-            f"{_DIRS['checkpoints']}/{m}/checkpoint.json", checkpoint
-        )
+        return self.write_json(f"{_DIRS['checkpoints']}/{m}/checkpoint.json", checkpoint)
 
     def load_checkpoint(self, milestone_id: str) -> Checkpoint:
         return Checkpoint.model_validate(
@@ -383,6 +376,7 @@ class ArtifactStore:
         Lazy import to avoid circular dependency with event_log module.
         """
         from .event_log import EventLog
+
         return EventLog(self._resolve(_EVENTS_LOG))
 
     def egress_log_path(self) -> Path:

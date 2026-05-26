@@ -4,6 +4,7 @@ Strategy: subclass `BaseAgent` and override `_execute_sdk` with a synthetic
 result so we don't need the actual OpenAI Agents SDK installed during unit
 tests. This is the documented testing pattern.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +15,7 @@ import pytest
 from maf_coder.agents import AgentResult, BaseAgent, TaskContext
 from maf_coder.agents.base import _RawResult
 from maf_coder.blackboard import ArtifactStore, EventLog
-from maf_coder.models.router import ModelConfig, ModelRouter, RoleConfig, RouterConfig
+from maf_coder.models.router import ModelRouter
 from maf_coder.schemas import (
     NetworkPolicy,
     Permission,
@@ -23,7 +24,6 @@ from maf_coder.schemas import (
     Task,
     TaskBudget,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -149,7 +149,10 @@ class TestConstruction:
         agent = _StubAgent(
             prompt_path=prompt_file,
             raw_output="hi",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         assert "test agent" in agent._instructions
 
@@ -161,7 +164,10 @@ class TestConstruction:
             _StubAgent(
                 prompt_path=missing,
                 raw_output="x",
-                store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+                store=store,
+                event_log=event_log,
+                router=stub_router,
+                sandbox=_DummySandbox(),
             )
 
     def test_missing_role_attr_raises(
@@ -192,7 +198,10 @@ class TestRun:
         agent = _StubAgent(
             prompt_path=prompt_file,
             raw_output="hello world\n",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         result = await agent.run(_make_task(), mission_id="m-test-001")
         assert isinstance(result, AgentResult)
@@ -211,7 +220,10 @@ class TestRun:
         agent = _StubAgent(
             prompt_path=prompt_file,
             raw_output="x",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         await agent.run(_make_task(), mission_id="m-test-001")
         kinds = [e.kind for e in event_log.iter_events()]
@@ -227,8 +239,12 @@ class TestRun:
                 return _RawResult(final_output="never")
 
         agent = SlowAgent(
-            prompt_path=prompt_file, raw_output="x",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            prompt_path=prompt_file,
+            raw_output="x",
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         # 1-second budget
         result = await agent.run(_make_task(task_id="slow", timeout=1), mission_id="m-test-001")
@@ -249,13 +265,15 @@ class TestRun:
             role = Role.REVIEW_VALIDATOR
 
         # Add forbidden_providers constraint to review_validator
-        stub_router.config.roles["review_validator"].constraints = {
-            "forbidden_providers": []
-        }
+        stub_router.config.roles["review_validator"].constraints = {"forbidden_providers": []}
 
         agent = ReviewAgent(
-            prompt_path=prompt_file, raw_output="ok",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            prompt_path=prompt_file,
+            raw_output="ok",
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         # If coder_provider_in_use=anthropic and the only review model is openai,
         # the router must pick openai (which it does — no forbidden tweaking needed).
@@ -277,8 +295,12 @@ class TestRun:
                 raise RuntimeError("kaboom")
 
         agent = CrashAgent(
-            prompt_path=prompt_file, raw_output="x",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            prompt_path=prompt_file,
+            raw_output="x",
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         result = await agent.run(_make_task(), mission_id="m-test-001")
         assert result.errored is True
@@ -297,8 +319,12 @@ class TestRun:
                 raise ValueError("bad json")
 
         agent = BadParse(
-            prompt_path=prompt_file, raw_output="x",
-            store=store, event_log=event_log, router=stub_router, sandbox=_DummySandbox(),
+            prompt_path=prompt_file,
+            raw_output="x",
+            store=store,
+            event_log=event_log,
+            router=stub_router,
+            sandbox=_DummySandbox(),
         )
         result = await agent.run(_make_task(), mission_id="m-test-001")
         assert result.errored is True

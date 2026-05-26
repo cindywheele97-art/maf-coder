@@ -1,0 +1,562 @@
+"""Orchestrator tool factories (AGENT_TOOLS_SPEC §6).
+
+Orchestrator does NOT run code in the sandbox; all of its tools are in-process
+blackboard / scheduler operations.
+
+The scheduler is a *late-bound* dependency: tool factories accept it via the
+optional `scheduler` parameter so unit tests can substitute a stub. Production
+wiring passes the real `Scheduler` instance constructed by `MissionDriver`.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import UTC, datetime
+from typing import Any, Protocol
+
+from ...blackboard.artifact_store import ContractAlreadyLockedError
+from ...schemas import (
+    Checkpoint,
+    NetworkPolicy,
+    Permission,
+    RiskLevel,
+    Role,
+    Task,
+    TaskBudget,
+)
+from .._sdk import function_tool
+from ..base import TaskContext
+from ..errors import (
+    ArtifactError,
+    AssertionUnknownError,
+    PermissionDeniedError,
+    TaskAlreadyDispatchedError,
+)
+from ..permissions import check_tool_allowed
+from ..results import TaskHandle
+from . import record_tool_call
+
+logger = logging.getLogger(__name__)
+
+# Paths Orchestrator is allowed to save via save_artifact (top-level only).
+_ORCH_ALLOWED_SAVE_PREFIXES = (
+    "plan.md",
+    "tasks.yaml",
+    "risk_register.md",
+    "budget.yaml",
+    "validation_contract.yaml",
+    "final_answer.md",
+    "mission_retro.md",
+    "user_messages/",
+    "research_notes/",
+)
+
+# mission_state.json keys agents may patch directly via update_mission_state.
+_MS_AGENT_PATCHABLE = {
+    "current_milestone",
+    "last_status_report_at",
+    "coder_provider_in_use",
+}
+
+
+class _SchedulerLike(Protocol):
+    """Minimal interface the Orchestrator tools need from the Scheduler."""
+
+    async def add_task(self, task: Task) -> TaskHandle: ...
+    def has_task(self, task_id: str) -> bool: ...
+
+
+def _require_orchestrator(ctx: TaskContext, tool: str) -> None:
+    owner = ctx.task.owner
+    owner_str = owner.value if hasattr(owner, "value") else str(owner)
+    if owner_str != Role.ORCHESTRATOR.value:
+        raise PermissionDeniedError(
+            tool, f"only orchestrator may call (current owner: {owner_str})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# dispatch_task
+# ---------------------------------------------------------------------------
+
+
+def make_dispatch_task(ctx: TaskContext, *, scheduler: _SchedulerLike | None = None) -> Any:
+    @function_tool
+    async def dispatch_task(
+        task_id: str,
+        owner: str,
+        goal: str,
+        background: str,
+        acceptance_criteria: list[str],
+        depends_on: list[str] | None = None,
+        input_artifacts: list[str] | None = None,
+        required_outputs: list[str] | None = None,
+        allowed_paths: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
+        network_policy: str = "none",
+        max_tokens: int = 100_000,
+        max_runtime_sec: int = 600,
+        risk_level: str = "low",
+    ) -> dict[str, Any]:
+        """Schedule a task in the mission DAG. Orchestrator-only."""
+        _require_orchestrator(ctx, "dispatch_task")
+        check_tool_allowed(ctx.task.permission, "dispatch_task")
+
+        # Acceptance criteria must reference assertions present in the contract.
+        try:
+            contract = ctx.store.load_validation_contract()
+        except FileNotFoundError as e:
+            raise ArtifactError("dispatch_task: validation_contract.yaml not yet locked") from e
+        known_assertions: set[str] = set()
+        for feature in contract.features:
+            for assertion in feature.assertions:
+                known_assertions.add(assertion.id)
+        for ac in acceptance_criteria:
+            if ac not in known_assertions:
+                raise AssertionUnknownError(
+                    f"dispatch_task: acceptance_criteria id {ac!r} not in contract "
+                    f"(known: {sorted(known_assertions)})"
+                )
+
+        if scheduler is not None and scheduler.has_task(task_id):
+            raise TaskAlreadyDispatchedError(f"dispatch_task: task_id={task_id!r} already exists")
+
+        try:
+            np_enum = NetworkPolicy(network_policy)
+        except ValueError as e:
+            raise ArtifactError(f"dispatch_task: invalid network_policy: {e}") from e
+        try:
+            risk_enum = RiskLevel(risk_level)
+        except ValueError as e:
+            raise ArtifactError(f"dispatch_task: invalid risk_level: {e}") from e
+        try:
+            owner_enum = Role(owner)
+        except ValueError as e:
+            raise ArtifactError(f"dispatch_task: invalid owner: {e}") from e
+
+        task = Task(
+            task_id=task_id,
+            parent_milestone=ctx.task.parent_milestone,
+            owner=owner_enum,
+            priority=risk_enum,
+            risk_level=risk_enum,
+            goal=goal,
+            background=background,
+            acceptance_criteria=acceptance_criteria,
+            input_artifacts=input_artifacts or [],
+            required_outputs=required_outputs or [],
+            permission=Permission(
+                allowed_paths=allowed_paths or [],
+                allowed_tools=allowed_tools or [],
+                network_policy=np_enum,
+            ),
+            budget=TaskBudget(max_tokens=max_tokens, max_runtime_sec=max_runtime_sec),
+            depends_on=depends_on or [],
+        )
+
+        if scheduler is None:
+            handle = TaskHandle(task_id=task_id, dispatched_at=time.monotonic())
+            ctx.event_log.log_task_dispatched(
+                mission_id=ctx.mission_id,
+                task_id=task_id,
+                owner=owner_enum.value,
+                priority=risk_enum.value,
+            )
+        else:
+            handle = await scheduler.add_task(task)
+
+        record_tool_call(ctx, "dispatch_task", f"task_id={task_id} owner={owner_enum.value}")
+        return {
+            "task_id": handle.task_id,
+            "dispatched_at": handle.dispatched_at,
+        }
+
+    return dispatch_task
+
+
+# ---------------------------------------------------------------------------
+# read_artifact / save_artifact
+# ---------------------------------------------------------------------------
+
+
+def make_read_artifact(ctx: TaskContext) -> Any:
+    @function_tool
+    async def read_artifact(path: str) -> str:
+        """Read an artifact from the mission blackboard."""
+        check_tool_allowed(ctx.task.permission, "read_artifact")
+        try:
+            content = ctx.store.read_text(path)
+        except FileNotFoundError as e:
+            raise ArtifactError(f"read_artifact: {path}: not found") from e
+        except Exception as e:
+            raise ArtifactError(f"read_artifact: {path}: {e}") from e
+        record_tool_call(ctx, "read_artifact", f"path={path}")
+        # Truncate very large content for the agent's view, full content remains on disk.
+        if len(content) > 1_048_576:
+            return content[:1_048_576] + "\n... [TRUNCATED at 1MB]"
+        return content
+
+    return read_artifact
+
+
+def make_save_artifact(ctx: TaskContext) -> Any:
+    @function_tool
+    async def save_artifact(path: str, content: str) -> str:
+        """Write a top-level Orchestrator artifact to the mission blackboard."""
+        _require_orchestrator(ctx, "save_artifact")
+        check_tool_allowed(ctx.task.permission, "save_artifact")
+        if not any(path == p or path.startswith(p) for p in _ORCH_ALLOWED_SAVE_PREFIXES):
+            raise PermissionDeniedError(
+                path,
+                f"orchestrator may not save_artifact to {path!r}; "
+                f"allowed prefixes: {_ORCH_ALLOWED_SAVE_PREFIXES}",
+            )
+        if path == "validation_contract.yaml" and ctx.store.exists(path):
+            raise ContractAlreadyLockedError(
+                "save_artifact: validation_contract.yaml is write-once and already exists"
+            )
+        try:
+            written = ctx.store.write_text(path, content)
+        except Exception as e:
+            raise ArtifactError(f"save_artifact: {path}: {e}") from e
+        record_tool_call(ctx, "save_artifact", f"path={path} bytes={len(content)}")
+        ctx.event_log.log_artifact_written(
+            mission_id=ctx.mission_id,
+            actor="orchestrator",
+            path=path,
+            task_id=ctx.task.task_id,
+        )
+        return str(written)
+
+    return save_artifact
+
+
+# ---------------------------------------------------------------------------
+# emit_event
+# ---------------------------------------------------------------------------
+
+
+def make_emit_event(ctx: TaskContext) -> Any:
+    @function_tool
+    async def emit_event(kind: str, payload: dict[str, Any] | None = None) -> None:
+        """Emit a custom event to the mission EventLog."""
+        _require_orchestrator(ctx, "emit_event")
+        check_tool_allowed(ctx.task.permission, "emit_event")
+        from ...blackboard.event_log import Event
+
+        ctx.event_log.append(
+            Event(
+                kind=kind,
+                mission_id=ctx.mission_id,
+                trace_id=ctx.mission_id,
+                task_id=ctx.task.task_id,
+                actor="orchestrator",
+                payload=payload or {},
+            )
+        )
+        record_tool_call(ctx, "emit_event", f"kind={kind}")
+
+    return emit_event
+
+
+# ---------------------------------------------------------------------------
+# escalate_to_human_gate
+# ---------------------------------------------------------------------------
+
+
+def make_escalate_to_human_gate(ctx: TaskContext) -> Any:
+    @function_tool
+    async def escalate_to_human_gate(
+        reason: str,
+        options: list[str],
+        recommendation: str | None = None,
+        timeout_action: str = "pause_mission",
+        timeout_hours: int = 24,
+    ) -> None:
+        """Create user_messages/_pending_<ts>.md requesting human approval."""
+        _require_orchestrator(ctx, "escalate_to_human_gate")
+        check_tool_allowed(ctx.task.permission, "escalate_to_human_gate")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = f"user_messages/_pending_{ts}.md"
+        body_lines = [
+            "# Escalation pending Human Gate",
+            f"_created: {datetime.now(UTC).isoformat()}_",
+            "",
+            "## Reason",
+            reason,
+            "",
+            "## Options",
+        ]
+        for i, opt in enumerate(options, 1):
+            body_lines.append(f"{i}. {opt}")
+        if recommendation:
+            body_lines += ["", "## Recommendation", recommendation]
+        body_lines += [
+            "",
+            f"_timeout_action: {timeout_action} after {timeout_hours}h_",
+        ]
+        ctx.store.write_text(path, "\n".join(body_lines) + "\n")
+        ctx.event_log.log_escalation(
+            mission_id=ctx.mission_id,
+            target="human_gate",
+            reason=reason,
+            task_id=ctx.task.task_id,
+        )
+        record_tool_call(ctx, "escalate_to_human_gate", f"reason={reason[:60]}")
+
+    return escalate_to_human_gate
+
+
+# ---------------------------------------------------------------------------
+# create_checkpoint
+# ---------------------------------------------------------------------------
+
+
+def make_create_checkpoint(ctx: TaskContext) -> Any:
+    @function_tool
+    async def create_checkpoint(milestone_id: str) -> dict[str, Any]:
+        """Snapshot mission at a milestone boundary (git tag + sandbox commit)."""
+        _require_orchestrator(ctx, "create_checkpoint")
+        check_tool_allowed(ctx.task.permission, "create_checkpoint")
+        git_tag = f"mission/{ctx.mission_id}/{milestone_id}"
+        # Best-effort git tag in the sandbox. Non-fatal if it fails.
+        tag_res = await ctx.sandbox.exec(f"git tag -f {git_tag}", cwd="/workspace", timeout_sec=30)
+        try:
+            snapshot_id = await ctx.sandbox.commit_snapshot(image_tag=git_tag)
+        except Exception as e:
+            logger.warning("commit_snapshot failed: %r", e)
+            snapshot_id = ""
+        archive_rel = f"checkpoints/{milestone_id}/"
+        ctx.store.write_text(
+            archive_rel + "MANIFEST.txt",
+            f"milestone={milestone_id}\ngit_tag={git_tag}\n",
+        )
+
+        # Update mission_state if it exists.
+        try:
+            ms = ctx.store.load_mission_state()
+            if milestone_id not in ms.completed_milestones:
+                ms.completed_milestones.append(milestone_id)
+            ms.last_checkpoint_at = datetime.now(UTC)
+            ctx.store.save_mission_state(ms)
+        except FileNotFoundError:
+            logger.warning("create_checkpoint: mission_state.json missing")
+        except Exception as e:
+            logger.exception("create_checkpoint: mission_state update failed: %r", e)
+
+        checkpoint = Checkpoint(
+            mission_id=ctx.mission_id,
+            milestone_id=milestone_id,
+            git_tag=git_tag,
+            sandbox_snapshot_id=snapshot_id or "unknown",
+            artifact_archive_path=archive_rel,
+            cumulative_cost_usd=ctx.event_log.total_cost_usd(),
+            cumulative_wall_clock_hours=0.0,
+        )
+        ctx.store.save_checkpoint(checkpoint)
+        ctx.event_log.log_checkpoint_created(
+            mission_id=ctx.mission_id,
+            milestone_id=milestone_id,
+            git_tag=git_tag,
+            snapshot_id=snapshot_id or "",
+        )
+        record_tool_call(
+            ctx,
+            "create_checkpoint",
+            f"milestone={milestone_id} tag_exit={tag_res.exit_code}",
+        )
+        return {
+            "milestone_id": milestone_id,
+            "git_tag": git_tag,
+            "snapshot_id": snapshot_id,
+            "archive_path": archive_rel,
+            "cumulative_cost_usd": checkpoint.cumulative_cost_usd,
+        }
+
+    return create_checkpoint
+
+
+# ---------------------------------------------------------------------------
+# poll_user_messages / mark_user_message_processed
+# ---------------------------------------------------------------------------
+
+
+def make_poll_user_messages(ctx: TaskContext) -> Any:
+    @function_tool
+    async def poll_user_messages() -> list[dict[str, Any]]:
+        """Return unprocessed user messages, urgent first."""
+        _require_orchestrator(ctx, "poll_user_messages")
+        check_tool_allowed(ctx.task.permission, "poll_user_messages")
+        entries: list[dict[str, Any]] = []
+        for p in ctx.store.list_dir("user_messages"):
+            if not p.is_file() or not p.name.endswith(".md"):
+                continue
+            if p.name.startswith("_pending_"):
+                continue
+            urgent = p.name.startswith("!urgent")
+            entries.append(
+                {
+                    "filename": p.name,
+                    "path": f"user_messages/{p.name}",
+                    "content": p.read_text(encoding="utf-8"),
+                    "urgent": urgent,
+                    "created_at": datetime.fromtimestamp(p.stat().st_mtime, tz=UTC).isoformat(),
+                }
+            )
+        entries.sort(key=lambda e: (not e["urgent"], e["created_at"]))
+        record_tool_call(ctx, "poll_user_messages", f"count={len(entries)}")
+        return entries
+
+    return poll_user_messages
+
+
+def make_mark_user_message_processed(ctx: TaskContext) -> Any:
+    @function_tool
+    async def mark_user_message_processed(filename: str) -> None:
+        """Move user_messages/<filename> -> processed_messages/<filename>."""
+        _require_orchestrator(ctx, "mark_user_message_processed")
+        check_tool_allowed(ctx.task.permission, "mark_user_message_processed")
+        src = f"user_messages/{filename}"
+        if not ctx.store.exists(src):
+            raise ArtifactError(f"mark_user_message_processed: {src}: not found")
+        content = ctx.store.read_text(src)
+        ctx.store.write_text(f"processed_messages/{filename}", content)
+        # Delete original
+        try:
+            (ctx.store.mission_dir / "user_messages" / filename).unlink()
+        except OSError as e:
+            raise ArtifactError(f"mark_user_message_processed: unlink {src}: {e}") from e
+        # Update mission_state.last_user_message_processed_at
+        try:
+            ms = ctx.store.load_mission_state()
+            ms.last_user_message_processed_at = datetime.now(UTC)
+            ctx.store.save_mission_state(ms)
+        except FileNotFoundError:
+            pass
+        record_tool_call(ctx, "mark_user_message_processed", f"filename={filename}")
+
+    return mark_user_message_processed
+
+
+# ---------------------------------------------------------------------------
+# get_mission_state / update_mission_state
+# ---------------------------------------------------------------------------
+
+
+def make_get_mission_state(ctx: TaskContext) -> Any:
+    @function_tool
+    async def get_mission_state() -> dict[str, Any]:
+        """Return current mission_state.json as a dict."""
+        _require_orchestrator(ctx, "get_mission_state")
+        check_tool_allowed(ctx.task.permission, "get_mission_state")
+        try:
+            ms = ctx.store.load_mission_state()
+        except FileNotFoundError as e:
+            raise ArtifactError("get_mission_state: mission_state.json missing") from e
+        record_tool_call(ctx, "get_mission_state", "")
+        return ms.model_dump(mode="json")
+
+    return get_mission_state
+
+
+def make_update_mission_state(ctx: TaskContext) -> Any:
+    @function_tool
+    async def update_mission_state(updates: dict[str, Any]) -> dict[str, Any]:
+        """Patch mission_state.json. Only the agent-patchable subset is allowed."""
+        _require_orchestrator(ctx, "update_mission_state")
+        check_tool_allowed(ctx.task.permission, "update_mission_state")
+        bad = set(updates) - _MS_AGENT_PATCHABLE
+        if bad:
+            raise PermissionDeniedError(
+                "update_mission_state",
+                f"keys {sorted(bad)} are framework-managed; allowed: {sorted(_MS_AGENT_PATCHABLE)}",
+            )
+        try:
+            ms = ctx.store.load_mission_state()
+        except FileNotFoundError as e:
+            raise ArtifactError("update_mission_state: mission_state.json missing") from e
+        patched = ms.model_dump()
+        patched.update(updates)
+        from ...schemas import MissionState
+
+        new_ms = MissionState.model_validate(patched)
+        ctx.store.save_mission_state(new_ms)
+        record_tool_call(ctx, "update_mission_state", f"keys={sorted(updates.keys())}")
+        return new_ms.model_dump(mode="json")
+
+    return update_mission_state
+
+
+# ---------------------------------------------------------------------------
+# get_budget_status
+# ---------------------------------------------------------------------------
+
+
+def make_get_budget_status(ctx: TaskContext) -> Any:
+    @function_tool
+    async def get_budget_status() -> dict[str, Any]:
+        """Return current budget state derived from EventLog."""
+        _require_orchestrator(ctx, "get_budget_status")
+        check_tool_allowed(ctx.task.permission, "get_budget_status")
+        cost = ctx.event_log.total_cost_usd()
+        ti, to = ctx.event_log.total_tokens()
+        # Budget config lives in budget.yaml; if absent, fall back to defaults.
+        try:
+            budget_cfg = ctx.store.read_yaml("budget.yaml")
+        except Exception:
+            budget_cfg = {}
+        alert_threshold = float(budget_cfg.get("alert_threshold_usd", 50.0))
+        # Naive projection: linear from current burn (no time window known here).
+        projected = cost * 1.0
+        result = {
+            "tokens_used": ti + to,
+            "cost_usd": cost,
+            "alert_threshold_usd": alert_threshold,
+            "projected_total_usd": projected,
+            "wall_clock_vs_estimate_pct": 100.0,
+            "current_mode": "cost_conscious" if cost >= alert_threshold else "normal",
+        }
+        record_tool_call(ctx, "get_budget_status", "")
+        return result
+
+    return get_budget_status
+
+
+# ---------------------------------------------------------------------------
+# Factory entry
+# ---------------------------------------------------------------------------
+
+
+def build_orchestrator_tools(
+    ctx: TaskContext, *, scheduler: _SchedulerLike | None = None
+) -> list[Any]:
+    return [
+        make_dispatch_task(ctx, scheduler=scheduler),
+        make_read_artifact(ctx),
+        make_save_artifact(ctx),
+        make_emit_event(ctx),
+        make_escalate_to_human_gate(ctx),
+        make_create_checkpoint(ctx),
+        make_poll_user_messages(ctx),
+        make_mark_user_message_processed(ctx),
+        make_get_mission_state(ctx),
+        make_update_mission_state(ctx),
+        make_get_budget_status(ctx),
+    ]
+
+
+__all__ = [
+    "build_orchestrator_tools",
+    "make_create_checkpoint",
+    "make_dispatch_task",
+    "make_emit_event",
+    "make_escalate_to_human_gate",
+    "make_get_budget_status",
+    "make_get_mission_state",
+    "make_mark_user_message_processed",
+    "make_poll_user_messages",
+    "make_read_artifact",
+    "make_save_artifact",
+    "make_update_mission_state",
+]

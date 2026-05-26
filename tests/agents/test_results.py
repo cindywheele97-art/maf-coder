@@ -1,4 +1,5 @@
 """Result dataclasses tests (AGENT_TOOLS_SPEC §4)."""
+
 from __future__ import annotations
 
 import pytest
@@ -26,9 +27,7 @@ class TestCommandResult:
         assert r.ok is False
 
     def test_frozen(self) -> None:
-        r = CommandResult(
-            command="x", exit_code=0, stdout="", stderr="", duration_sec=0.0
-        )
+        r = CommandResult(command="x", exit_code=0, stdout="", stderr="", duration_sec=0.0)
         with pytest.raises(Exception):
             r.exit_code = 5  # type: ignore[misc]
 

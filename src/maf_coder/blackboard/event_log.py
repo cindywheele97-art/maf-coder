@@ -22,13 +22,13 @@ Design:
     - Convenience `log_*` helpers wrap the most common event kinds so callers
       don't have to construct Event manually for every emit.
 """
+
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -95,7 +95,7 @@ class Event(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     kind: str
     mission_id: str
     trace_id: str | None = None
@@ -146,12 +146,14 @@ class EventLog:
         repo: str | None = None,
         expected_budget_usd: float | None = None,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.MISSION_START.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            payload={"goal": goal, "repo": repo, "expected_budget_usd": expected_budget_usd},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.MISSION_START.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                payload={"goal": goal, "repo": repo, "expected_budget_usd": expected_budget_usd},
+            )
+        )
 
     def log_mission_end(
         self,
@@ -161,16 +163,18 @@ class EventLog:
         total_cost_usd: float,
         total_wall_clock_hours: float,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.MISSION_END.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            payload={
-                "result": result,
-                "total_cost_usd": total_cost_usd,
-                "total_wall_clock_hours": total_wall_clock_hours,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.MISSION_END.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                payload={
+                    "result": result,
+                    "total_cost_usd": total_cost_usd,
+                    "total_wall_clock_hours": total_wall_clock_hours,
+                },
+            )
+        )
 
     def log_task_dispatched(
         self,
@@ -180,14 +184,16 @@ class EventLog:
         owner: str,
         priority: str,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.TASK_DISPATCHED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor="orchestrator",
-            payload={"owner": owner, "priority": priority},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.TASK_DISPATCHED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor="orchestrator",
+                payload={"owner": owner, "priority": priority},
+            )
+        )
 
     def log_task_complete(
         self,
@@ -197,14 +203,16 @@ class EventLog:
         actor: str,
         duration_sec: float,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.TASK_COMPLETE.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor=actor,
-            payload={"duration_sec": duration_sec},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.TASK_COMPLETE.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={"duration_sec": duration_sec},
+            )
+        )
 
     def log_task_failed(
         self,
@@ -215,14 +223,16 @@ class EventLog:
         reason: str,
         will_retry: bool,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.TASK_FAILED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor=actor,
-            payload={"reason": reason, "will_retry": will_retry},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.TASK_FAILED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={"reason": reason, "will_retry": will_retry},
+            )
+        )
 
     def log_llm_call(
         self,
@@ -237,21 +247,23 @@ class EventLog:
         task_id: str | None = None,
         fallback_used: bool = False,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.LLM_CALL.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor=actor,
-            payload={
-                "model": model,
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-                "cost_usd": cost_usd,
-                "latency_sec": latency_sec,
-                "fallback_used": fallback_used,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.LLM_CALL.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={
+                    "model": model,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "cost_usd": cost_usd,
+                    "latency_sec": latency_sec,
+                    "fallback_used": fallback_used,
+                },
+            )
+        )
 
     def log_tool_call(
         self,
@@ -264,19 +276,21 @@ class EventLog:
         duration_sec: float | None = None,
         task_id: str | None = None,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.TOOL_CALL.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor=actor,
-            payload={
-                "tool": tool,
-                "args_summary": args_summary,
-                "exit_code": exit_code,
-                "duration_sec": duration_sec,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.TOOL_CALL.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={
+                    "tool": tool,
+                    "args_summary": args_summary,
+                    "exit_code": exit_code,
+                    "duration_sec": duration_sec,
+                },
+            )
+        )
 
     def log_artifact_written(
         self,
@@ -286,14 +300,16 @@ class EventLog:
         path: str,
         task_id: str | None = None,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.ARTIFACT_WRITTEN.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor=actor,
-            payload={"path": path},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.ARTIFACT_WRITTEN.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={"path": path},
+            )
+        )
 
     def log_checkpoint_created(
         self,
@@ -303,17 +319,19 @@ class EventLog:
         git_tag: str,
         snapshot_id: str,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.CHECKPOINT_CREATED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            actor="orchestrator",
-            payload={
-                "milestone_id": milestone_id,
-                "git_tag": git_tag,
-                "snapshot_id": snapshot_id,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.CHECKPOINT_CREATED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                actor="orchestrator",
+                payload={
+                    "milestone_id": milestone_id,
+                    "git_tag": git_tag,
+                    "snapshot_id": snapshot_id,
+                },
+            )
+        )
 
     def log_status_report_emitted(
         self,
@@ -323,17 +341,19 @@ class EventLog:
         cost_usd: float,
         elapsed_hours: float,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.STATUS_REPORT_EMITTED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            actor="orchestrator",
-            payload={
-                "report_number": report_number,
-                "cost_usd": cost_usd,
-                "elapsed_hours": elapsed_hours,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.STATUS_REPORT_EMITTED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                actor="orchestrator",
+                payload={
+                    "report_number": report_number,
+                    "cost_usd": cost_usd,
+                    "elapsed_hours": elapsed_hours,
+                },
+            )
+        )
 
     def log_validator_verdict(
         self,
@@ -344,18 +364,20 @@ class EventLog:
         result: str,
         triggered_second_pass: bool = False,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.VALIDATOR_VERDICT.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor=validator,
-            payload={
-                "validator": validator,
-                "result": result,
-                "triggered_second_pass": triggered_second_pass,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.VALIDATOR_VERDICT.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=validator,
+                payload={
+                    "validator": validator,
+                    "result": result,
+                    "triggered_second_pass": triggered_second_pass,
+                },
+            )
+        )
 
     def log_second_pass_triggered(
         self,
@@ -365,14 +387,16 @@ class EventLog:
         reason: str,
     ) -> None:
         """v3.1 — emitted when handoff completeness rule fires."""
-        self.append(Event(
-            kind=EventKind.SECOND_PASS_TRIGGERED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor="review_validator",
-            payload={"reason": reason},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.SECOND_PASS_TRIGGERED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor="review_validator",
+                payload={"reason": reason},
+            )
+        )
 
     def log_security_finding(
         self,
@@ -383,18 +407,20 @@ class EventLog:
         description: str,
         task_id: str | None = None,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.SECURITY_FINDING.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            actor="security_worker",
-            payload={
-                "severity": severity,
-                "category": category,
-                "description": description,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.SECURITY_FINDING.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor="security_worker",
+                payload={
+                    "severity": severity,
+                    "category": category,
+                    "description": description,
+                },
+            )
+        )
 
     def log_escalation(
         self,
@@ -404,13 +430,15 @@ class EventLog:
         reason: str,
         task_id: str | None = None,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.ESCALATION_TRIGGERED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            task_id=task_id,
-            payload={"target": target, "reason": reason},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.ESCALATION_TRIGGERED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                payload={"target": target, "reason": reason},
+            )
+        )
 
     def log_budget_alert(
         self,
@@ -420,17 +448,19 @@ class EventLog:
         cost_usd: float,
         budget_usd: float,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.BUDGET_ALERT.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            actor="orchestrator",
-            payload={
-                "threshold_pct": threshold_pct,
-                "cost_usd": cost_usd,
-                "budget_usd": budget_usd,
-            },
-        ))
+        self.append(
+            Event(
+                kind=EventKind.BUDGET_ALERT.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                actor="orchestrator",
+                payload={
+                    "threshold_pct": threshold_pct,
+                    "cost_usd": cost_usd,
+                    "budget_usd": budget_usd,
+                },
+            )
+        )
 
     def log_user_message_received(
         self,
@@ -439,13 +469,15 @@ class EventLog:
         message_path: str,
         urgent: bool,
     ) -> None:
-        self.append(Event(
-            kind=EventKind.USER_MESSAGE_RECEIVED.value,
-            mission_id=mission_id,
-            trace_id=mission_id,
-            actor="orchestrator",
-            payload={"message_path": message_path, "urgent": urgent},
-        ))
+        self.append(
+            Event(
+                kind=EventKind.USER_MESSAGE_RECEIVED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                actor="orchestrator",
+                payload={"message_path": message_path, "urgent": urgent},
+            )
+        )
 
     # -- Read / iterate -----------------------------------------------------
 
@@ -460,7 +492,7 @@ class EventLog:
                     continue
                 try:
                     yield Event.model_validate_json(line)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.warning("Skipping malformed event log line: %r (%s)", line[:200], e)
 
     def filter_kind(self, kind: str | EventKind) -> Iterator[Event]:
@@ -478,8 +510,7 @@ class EventLog:
     def total_cost_usd(self) -> float:
         """Sum cost_usd across all LLM_CALL events."""
         return sum(
-            float(e.payload.get("cost_usd", 0.0))
-            for e in self.filter_kind(EventKind.LLM_CALL)
+            float(e.payload.get("cost_usd", 0.0)) for e in self.filter_kind(EventKind.LLM_CALL)
         )
 
     def total_tokens(self) -> tuple[int, int]:

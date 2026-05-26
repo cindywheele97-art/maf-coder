@@ -4,6 +4,7 @@ Tools are invoked directly (the SDK shim makes @function_tool a no-op when
 the real SDK isn't installed). Sandbox is the local backend; ArtifactStore is
 a tmp-path-backed instance.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,7 +46,6 @@ from maf_coder.schemas import (
     TaskBudget,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -79,9 +79,7 @@ async def sandbox(tmp_path: Path):
     # Initialize a real git repo so the diff/log/show tools have something to
     # show. Errors from these are tolerated by the tests below.
     await sb.exec("git init -q -b main", cwd="/workspace")
-    await sb.exec(
-        "git config user.email t@t && git config user.name t", cwd="/workspace"
-    )
+    await sb.exec("git config user.email t@t && git config user.name t", cwd="/workspace")
     await sb.exec("touch initial && git add -A && git commit -q -m initial", cwd="/workspace")
     try:
         yield sb
@@ -366,9 +364,22 @@ class TestFactoryList:
         assert len(tools) >= 15  # all required Coder tools
         names = {t.__name__ for t in tools}
         for required in (
-            "read_file", "write_file", "edit_file", "run_bash",
-            "cargo_check", "cargo_test", "cargo_clippy", "cargo_fmt", "cargo_nextest",
-            "git_status", "git_diff", "git_show", "git_log", "git_checkout",
-            "save_patch", "save_handoff", "save_test_report",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "run_bash",
+            "cargo_check",
+            "cargo_test",
+            "cargo_clippy",
+            "cargo_fmt",
+            "cargo_nextest",
+            "git_status",
+            "git_diff",
+            "git_show",
+            "git_log",
+            "git_checkout",
+            "save_patch",
+            "save_handoff",
+            "save_test_report",
         ):
             assert required in names, f"missing tool: {required}"

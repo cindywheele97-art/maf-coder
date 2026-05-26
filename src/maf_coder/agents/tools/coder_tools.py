@@ -12,10 +12,12 @@ The full Coder surface:
     git           : git_status, git_diff, git_show, git_log, git_checkout
     output        : save_patch, save_handoff, save_test_report
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ...schemas import Handoff
 from .._sdk import function_tool
@@ -39,7 +41,7 @@ from . import record_tool_call, time_block
 # ---------------------------------------------------------------------------
 
 
-def make_read_file(ctx: TaskContext) -> Callable[..., Any]:
+def make_read_file(ctx: TaskContext) -> Any:
     @function_tool
     async def read_file(path: str, max_bytes: int = 1_000_000) -> FileContent:
         """Read a file from the sandbox worktree.
@@ -51,15 +53,13 @@ def make_read_file(ctx: TaskContext) -> Callable[..., Any]:
         check_path_access(ctx.task.permission, path, mode="read")
         t0 = time_block()
         fc = await ctx.sandbox.read_file(path, max_bytes=max_bytes)
-        record_tool_call(
-            ctx, "read_file", f"path={path}", duration_sec=time_block() - t0
-        )
+        record_tool_call(ctx, "read_file", f"path={path}", duration_sec=time_block() - t0)
         return fc
 
     return read_file
 
 
-def make_write_file(ctx: TaskContext) -> Callable[..., Any]:
+def make_write_file(ctx: TaskContext) -> Any:
     @function_tool
     async def write_file(path: str, content: str) -> str:
         """Write a file in the sandbox worktree.
@@ -73,7 +73,9 @@ def make_write_file(ctx: TaskContext) -> Callable[..., Any]:
         t0 = time_block()
         await ctx.sandbox.write_file(path, content)
         record_tool_call(
-            ctx, "write_file", f"path={path} bytes={len(content)}",
+            ctx,
+            "write_file",
+            f"path={path} bytes={len(content)}",
             duration_sec=time_block() - t0,
         )
         return path
@@ -81,7 +83,7 @@ def make_write_file(ctx: TaskContext) -> Callable[..., Any]:
     return write_file
 
 
-def make_edit_file(ctx: TaskContext) -> Callable[..., Any]:
+def make_edit_file(ctx: TaskContext) -> Any:
     @function_tool
     async def edit_file(
         path: str,
@@ -112,7 +114,9 @@ def make_edit_file(ctx: TaskContext) -> Callable[..., Any]:
         new_content = fc.content.replace(old_string, new_string)
         await ctx.sandbox.write_file(path, new_content)
         record_tool_call(
-            ctx, "edit_file", f"path={path} replacements={count}",
+            ctx,
+            "edit_file",
+            f"path={path} replacements={count}",
             duration_sec=time_block() - t0,
         )
         return path
@@ -125,7 +129,7 @@ def make_edit_file(ctx: TaskContext) -> Callable[..., Any]:
 # ---------------------------------------------------------------------------
 
 
-def make_run_bash(ctx: TaskContext) -> Callable[..., Any]:
+def make_run_bash(ctx: TaskContext) -> Any:
     @function_tool
     async def run_bash(
         cmd: str,
@@ -140,9 +144,7 @@ def make_run_bash(ctx: TaskContext) -> Callable[..., Any]:
         check_tool_allowed(ctx.task.permission, "run_bash")
         check_command_pattern(ctx.task.permission, cmd)
         t0 = time_block()
-        res = await ctx.sandbox.exec(
-            cmd, cwd=cwd or "/workspace", timeout_sec=timeout_sec
-        )
+        res = await ctx.sandbox.exec(cmd, cwd=cwd or "/workspace", timeout_sec=timeout_sec)
         record_tool_call(
             ctx,
             "run_bash",
@@ -163,7 +165,7 @@ def make_run_bash(ctx: TaskContext) -> Callable[..., Any]:
 def _cargo_factory(tool_name: str, default_cmd: str) -> Callable[[TaskContext], Callable[..., Any]]:
     """Build a make_cargo_<x> factory function for a stock cargo gate."""
 
-    def make(ctx: TaskContext) -> Callable[..., Any]:
+    def make(ctx: TaskContext) -> Any:
         @function_tool
         async def runner(args: list[str] | None = None) -> CommandResult:
             check_tool_allowed(ctx.task.permission, tool_name)
@@ -194,12 +196,10 @@ make_cargo_clippy = _cargo_factory(
     "cargo_clippy",
     "cargo clippy --workspace --all-targets --all-features -- -D warnings",
 )
-make_cargo_nextest = _cargo_factory(
-    "cargo_nextest", "cargo nextest run --workspace --all-features"
-)
+make_cargo_nextest = _cargo_factory("cargo_nextest", "cargo nextest run --workspace --all-features")
 
 
-def make_cargo_fmt(ctx: TaskContext) -> Callable[..., Any]:
+def make_cargo_fmt(ctx: TaskContext) -> Any:
     @function_tool
     async def cargo_fmt(check_only: bool = False) -> CommandResult:
         """Run `cargo fmt`. If check_only=True, runs with --check (no mutation)."""
@@ -226,25 +226,30 @@ def make_cargo_fmt(ctx: TaskContext) -> Callable[..., Any]:
 
 
 _FORBIDDEN_CHECKOUT_TARGETS = {
-    "main", "master", "develop", "trunk", "release",
+    "main",
+    "master",
+    "develop",
+    "trunk",
+    "release",
 }
 
 
-def make_git_status(ctx: TaskContext) -> Callable[..., Any]:
+def make_git_status(ctx: TaskContext) -> Any:
     @function_tool
     async def git_status() -> str:
         """Run `git status --short` in the worktree."""
         check_tool_allowed(ctx.task.permission, "git_status")
         t0 = time_block()
         res = await ctx.sandbox.exec("git status --short", cwd="/workspace")
-        record_tool_call(ctx, "git_status", "", exit_code=res.exit_code,
-                         duration_sec=time_block() - t0)
+        record_tool_call(
+            ctx, "git_status", "", exit_code=res.exit_code, duration_sec=time_block() - t0
+        )
         return res.stdout
 
     return git_status
 
 
-def make_git_diff(ctx: TaskContext) -> Callable[..., Any]:
+def make_git_diff(ctx: TaskContext) -> Any:
     @function_tool
     async def git_diff(args: list[str] | None = None) -> str:
         """Run `git diff` with optional args. Default: HEAD."""
@@ -253,14 +258,15 @@ def make_git_diff(ctx: TaskContext) -> Callable[..., Any]:
         cmd = f"git diff {rest}"
         t0 = time_block()
         res = await ctx.sandbox.exec(cmd, cwd="/workspace", timeout_sec=60)
-        record_tool_call(ctx, "git_diff", f"args={rest}", exit_code=res.exit_code,
-                         duration_sec=time_block() - t0)
+        record_tool_call(
+            ctx, "git_diff", f"args={rest}", exit_code=res.exit_code, duration_sec=time_block() - t0
+        )
         return res.stdout
 
     return git_diff
 
 
-def make_git_show(ctx: TaskContext) -> Callable[..., Any]:
+def make_git_show(ctx: TaskContext) -> Any:
     @function_tool
     async def git_show(ref: str) -> str:
         """Run `git show <ref>`."""
@@ -269,14 +275,15 @@ def make_git_show(ctx: TaskContext) -> Callable[..., Any]:
             raise PermissionDeniedError(ref, "git ref contains disallowed characters")
         t0 = time_block()
         res = await ctx.sandbox.exec(f"git show {ref}", cwd="/workspace", timeout_sec=60)
-        record_tool_call(ctx, "git_show", f"ref={ref}", exit_code=res.exit_code,
-                         duration_sec=time_block() - t0)
+        record_tool_call(
+            ctx, "git_show", f"ref={ref}", exit_code=res.exit_code, duration_sec=time_block() - t0
+        )
         return res.stdout
 
     return git_show
 
 
-def make_git_log(ctx: TaskContext) -> Callable[..., Any]:
+def make_git_log(ctx: TaskContext) -> Any:
     @function_tool
     async def git_log(args: list[str] | None = None) -> str:
         """Run `git log` with optional args. Default: -10 --oneline."""
@@ -284,18 +291,17 @@ def make_git_log(ctx: TaskContext) -> Callable[..., Any]:
         rest = " ".join(args or ["-10", "--oneline"])
         t0 = time_block()
         res = await ctx.sandbox.exec(f"git log {rest}", cwd="/workspace", timeout_sec=60)
-        record_tool_call(ctx, "git_log", f"args={rest}", exit_code=res.exit_code,
-                         duration_sec=time_block() - t0)
+        record_tool_call(
+            ctx, "git_log", f"args={rest}", exit_code=res.exit_code, duration_sec=time_block() - t0
+        )
         return res.stdout
 
     return git_log
 
 
-def make_git_checkout(ctx: TaskContext) -> Callable[..., Any]:
+def make_git_checkout(ctx: TaskContext) -> Any:
     @function_tool
-    async def git_checkout(
-        target: str = "--", paths: list[str] | None = None
-    ) -> CommandResult:
+    async def git_checkout(target: str = "--", paths: list[str] | None = None) -> CommandResult:
         """Reset worktree to HEAD (default) or to specific paths.
 
         Used at task start for the v3.1 idempotent-writes rule:
@@ -313,8 +319,13 @@ def make_git_checkout(ctx: TaskContext) -> Callable[..., Any]:
         cmd = f"git checkout {target} {path_args}".strip()
         t0 = time_block()
         res = await ctx.sandbox.exec(cmd, cwd="/workspace", timeout_sec=60)
-        record_tool_call(ctx, "git_checkout", f"target={target}",
-                         exit_code=res.exit_code, duration_sec=time_block() - t0)
+        record_tool_call(
+            ctx,
+            "git_checkout",
+            f"target={target}",
+            exit_code=res.exit_code,
+            duration_sec=time_block() - t0,
+        )
         return res
 
     return git_checkout
@@ -335,37 +346,39 @@ def _require_own_task_id(ctx: TaskContext, task_id: str, tool: str) -> None:
         )
 
 
-def make_save_patch(ctx: TaskContext) -> Callable[..., Any]:
+def make_save_patch(ctx: TaskContext) -> Any:
     @function_tool
     async def save_patch(task_id: str) -> str:
         """Generate the worktree diff vs HEAD and save to patches/<task_id>.diff."""
         _require_own_task_id(ctx, task_id, "save_patch")
         check_tool_allowed(ctx.task.permission, "save_patch")
         t0 = time_block()
-        diff = await ctx.sandbox.exec(
-            "git diff HEAD", cwd="/workspace", timeout_sec=60
-        )
+        diff = await ctx.sandbox.exec("git diff HEAD", cwd="/workspace", timeout_sec=60)
         if diff.exit_code != 0 and "fatal" in diff.stderr.lower():
             raise SandboxError(f"git diff failed: {diff.stderr}")
         relpath = f"patches/{task_id}.diff"
         try:
             ctx.store.write_text(relpath, diff.stdout)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise ArtifactError(f"save_patch: {e}") from e
         record_tool_call(
-            ctx, "save_patch", f"task_id={task_id} bytes={len(diff.stdout)}",
+            ctx,
+            "save_patch",
+            f"task_id={task_id} bytes={len(diff.stdout)}",
             duration_sec=time_block() - t0,
         )
         ctx.event_log.log_artifact_written(
-            mission_id=ctx.mission_id, actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
-            path=relpath, task_id=task_id,
+            mission_id=ctx.mission_id,
+            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
+            path=relpath,
+            task_id=task_id,
         )
         return relpath
 
     return save_patch
 
 
-def make_save_handoff(ctx: TaskContext) -> Callable[..., Any]:
+def make_save_handoff(ctx: TaskContext) -> Any:
     @function_tool
     async def save_handoff(
         task_id: str,
@@ -404,22 +417,25 @@ def make_save_handoff(ctx: TaskContext) -> Callable[..., Any]:
             raise ArtifactError(f"save_handoff: validation failed: {e}") from e
         try:
             path = ctx.store.save_handoff(task_id, handoff)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise ArtifactError(f"save_handoff: store rejected: {e}") from e
         record_tool_call(
-            ctx, "save_handoff", f"task_id={task_id} completed={len(completed)}",
+            ctx,
+            "save_handoff",
+            f"task_id={task_id} completed={len(completed)}",
         )
         ctx.event_log.log_artifact_written(
             mission_id=ctx.mission_id,
             actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
-            path=str(path), task_id=task_id,
+            path=str(path),
+            task_id=task_id,
         )
         return str(path)
 
     return save_handoff
 
 
-def make_save_test_report(ctx: TaskContext) -> Callable[..., Any]:
+def make_save_test_report(ctx: TaskContext) -> Any:
     @function_tool
     async def save_test_report(task_id: str, report: dict[str, Any]) -> str:
         """Save reports/<task_id>.test.json from the Coder's self-test results."""
@@ -428,13 +444,14 @@ def make_save_test_report(ctx: TaskContext) -> Callable[..., Any]:
         relpath = f"reports/{task_id}.test.json"
         try:
             ctx.store.write_json(relpath, report)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise ArtifactError(f"save_test_report: {e}") from e
         record_tool_call(ctx, "save_test_report", f"task_id={task_id}")
         ctx.event_log.log_artifact_written(
             mission_id=ctx.mission_id,
             actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
-            path=relpath, task_id=task_id,
+            path=relpath,
+            task_id=task_id,
         )
         return relpath
 
@@ -471,11 +488,21 @@ def build_coder_tools(ctx: TaskContext) -> list[Any]:
 
 __all__ = [
     "build_coder_tools",
-    "make_read_file", "make_write_file", "make_edit_file",
-    "make_run_bash",
-    "make_cargo_check", "make_cargo_test", "make_cargo_clippy",
-    "make_cargo_fmt", "make_cargo_nextest",
-    "make_git_status", "make_git_diff", "make_git_show", "make_git_log",
+    "make_cargo_check",
+    "make_cargo_clippy",
+    "make_cargo_fmt",
+    "make_cargo_nextest",
+    "make_cargo_test",
+    "make_edit_file",
     "make_git_checkout",
-    "make_save_patch", "make_save_handoff", "make_save_test_report",
+    "make_git_diff",
+    "make_git_log",
+    "make_git_show",
+    "make_git_status",
+    "make_read_file",
+    "make_run_bash",
+    "make_save_handoff",
+    "make_save_patch",
+    "make_save_test_report",
+    "make_write_file",
 ]

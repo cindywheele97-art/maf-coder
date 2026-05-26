@@ -2,6 +2,7 @@
 
 Phase A 退出门槛: `pytest tests/test_schemas.py` 全过.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -23,7 +24,6 @@ from maf_coder.schemas import (
     VerificationMethod,
 )
 from maf_coder.schemas.verdict import CargoGateResults
-
 
 # ============================================================================
 # Message
@@ -201,9 +201,7 @@ class TestValidationContract:
 
 class TestReviewVerdict:
     def _base_gates(self, *, all_pass: bool = True) -> CargoGateResults:
-        return CargoGateResults(
-            build=all_pass, test=all_pass, clippy=all_pass, fmt=all_pass
-        )
+        return CargoGateResults(build=all_pass, test=all_pass, clippy=all_pass, fmt=all_pass)
 
     def test_default_no_second_pass_no_hardcoded_warnings(self) -> None:
         verdict = ReviewVerdict(

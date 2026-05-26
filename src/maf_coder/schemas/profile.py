@@ -8,6 +8,7 @@ Produced at mission startup by `project_profiler`. Drives:
 
 Stored at: missions/<mission_id>/project_profile.yaml
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -107,7 +108,9 @@ class CIExisting(BaseModel):
     has_github_actions: bool = False
     has_gitlab_ci: bool = False
     workflow_paths: list[str] = Field(default_factory=list)
-    reuse: bool = Field(default=True, description="If True, ReviewValidator may invoke existing CI scripts")
+    reuse: bool = Field(
+        default=True, description="If True, ReviewValidator may invoke existing CI scripts"
+    )
 
 
 class ProjectProfile(BaseModel):

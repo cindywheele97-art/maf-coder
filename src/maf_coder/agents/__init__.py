@@ -10,9 +10,11 @@ Public surface (Phase B):
 - ReviewValidatorAgent  (review.py)
 - OrchestratorAgent     (orchestrator.py)
 """
+
 from __future__ import annotations
 
 from .base import AgentResult, BaseAgent, TaskContext
+from .coder import CoderRunSummary, CoderWorkerAgent
 from .errors import (
     ArtifactError,
     AssertionUnknownError,
@@ -23,6 +25,7 @@ from .errors import (
     TaskAlreadyDispatchedError,
     ToolError,
 )
+from .orchestrator import OrchestratorAgent, OrchestratorRunSummary
 from .results import (
     CommandResult,
     FileContent,
@@ -31,15 +34,34 @@ from .results import (
     TaskHandle,
     TaskStatus,
 )
+from .review import ReviewRunSummary, ReviewValidatorAgent
 
 __all__ = [
     # Base
-    "BaseAgent", "TaskContext", "AgentResult",
+    "BaseAgent",
+    "TaskContext",
+    "AgentResult",
     # Errors
-    "ToolError", "PermissionDeniedError", "SandboxError", "ArtifactError",
-    "ExternalContentError", "BudgetExceededError", "TaskAlreadyDispatchedError",
+    "ToolError",
+    "PermissionDeniedError",
+    "SandboxError",
+    "ArtifactError",
+    "ExternalContentError",
+    "BudgetExceededError",
+    "TaskAlreadyDispatchedError",
     "AssertionUnknownError",
     # Results
-    "CommandResult", "FileContent", "GrepMatch", "SanitizedContent",
-    "TaskHandle", "TaskStatus",
+    "CommandResult",
+    "FileContent",
+    "GrepMatch",
+    "SanitizedContent",
+    "TaskHandle",
+    "TaskStatus",
+    # Role agents
+    "CoderWorkerAgent",
+    "CoderRunSummary",
+    "ReviewValidatorAgent",
+    "ReviewRunSummary",
+    "OrchestratorAgent",
+    "OrchestratorRunSummary",
 ]

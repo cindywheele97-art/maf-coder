@@ -30,6 +30,7 @@ Testing without the SDK installed: override `_execute_sdk` in a subclass to
 return a synthetic `_RawResult`. See `tests/agents/test_base_agent.py` for the
 canonical stub pattern.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -74,7 +75,7 @@ class TaskContext:
     store: ArtifactStore
     event_log: EventLog
     router: ModelRouter
-    sandbox: "SandboxClient"
+    sandbox: SandboxClient
     coder_provider_in_use: str | None = None
     # Mutable scratch-pad used by the agent shell to record observed
     # tool invocations during a single run. Tools append to this list AFTER
@@ -138,14 +139,12 @@ class BaseAgent(ABC, Generic[T]):
         store: ArtifactStore,
         event_log: EventLog,
         router: ModelRouter,
-        sandbox: "SandboxClient",
+        sandbox: SandboxClient,
     ) -> None:
         if not hasattr(self, "role"):
             raise TypeError(f"{type(self).__name__} must set class attribute `role`")
         if not hasattr(self, "prompt_path"):
-            raise TypeError(
-                f"{type(self).__name__} must set class attribute `prompt_path`"
-            )
+            raise TypeError(f"{type(self).__name__} must set class attribute `prompt_path`")
         self.store = store
         self.event_log = event_log
         self.router = router
@@ -265,7 +264,7 @@ class BaseAgent(ABC, Generic[T]):
                 ),
                 timeout=float(task.budget.max_runtime_sec),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = time.monotonic() - t0
             return AgentResult(
                 role=self.role,
@@ -299,7 +298,7 @@ class BaseAgent(ABC, Generic[T]):
                 errored=True,
                 error_reason=f"{type(e).__name__}: {e}",
             )
-        except Exception as e:  # noqa: BLE001 — we want a structured error envelope
+        except Exception as e:
             duration = time.monotonic() - t0
             logger.exception("Agent run crashed for task=%s", task.task_id)
             return AgentResult(
@@ -323,7 +322,7 @@ class BaseAgent(ABC, Generic[T]):
         try:
             parsed = self.parse_output(raw.final_output, ctx)
             parse_error: str | None = None
-        except Exception as e:  # noqa: BLE001 — agents must not crash on bad output
+        except Exception as e:
             logger.exception("parse_output failed for task=%s", task.task_id)
             parsed = self._null_output()
             parse_error = f"parse_failed: {type(e).__name__}: {e}"
@@ -342,7 +341,7 @@ class BaseAgent(ABC, Generic[T]):
                 task_id=task.task_id,
                 fallback_used=raw.fallback_used,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("event_log.log_llm_call failed; continuing")
 
         return AgentResult(
@@ -391,10 +390,11 @@ class BaseAgent(ABC, Generic[T]):
                 "Install `openai-agents` or stub this method in tests."
             )
 
+        wrapped_tools = [_sdk.wrap_for_sdk(t) for t in tools]
         agent_kwargs: dict[str, Any] = {
             "name": self.role.value if hasattr(self.role, "value") else str(self.role),
             "instructions": instructions,
-            "tools": tools,
+            "tools": wrapped_tools,
         }
         if _sdk.LitellmModel is not None:
             agent_kwargs["model"] = _sdk.LitellmModel(model_id)
@@ -430,4 +430,4 @@ class BaseAgent(ABC, Generic[T]):
         return ""  # type: ignore[return-value]
 
 
-__all__ = ["BaseAgent", "TaskContext", "AgentResult"]
+__all__ = ["AgentResult", "BaseAgent", "TaskContext"]

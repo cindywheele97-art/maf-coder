@@ -15,6 +15,7 @@ Design rules:
 - Wildcards in `allowed_paths` / `allowed_tools` use `fnmatch` glob syntax
   (i.e. `cargo_*` matches `cargo_test` and `cargo_check`).
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -47,9 +48,7 @@ def _normalize_relpath(path: str) -> str:
 
     parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
     if any(p == ".." for p in parts):
-        raise PermissionDeniedError(
-            path, "path traversal (..) not allowed"
-        )
+        raise PermissionDeniedError(path, "path traversal (..) not allowed")
     if path.startswith("/"):
         return "/" + "/".join(parts)
     return "/".join(parts) or "."
@@ -69,9 +68,8 @@ def _path_matches_any(path: str, patterns: list[str]) -> bool:
             prefix = pat[:-3].rstrip("/")
             if path == prefix or path.startswith(prefix + "/"):
                 return True
-        if pat.endswith("/"):
-            if path == pat[:-1] or path.startswith(pat):
-                return True
+        if pat.endswith("/") and (path == pat[:-1] or path.startswith(pat)):
+            return True
         if fnmatch.fnmatch(path, pat):
             return True
         # Also try "prefix" match for patterns without explicit glob suffix
@@ -159,9 +157,11 @@ def check_network_allowed(
       - OPEN: allow everything (still subject to the global denylist of
         link-local / private RFC-1918 hosts to prevent SSRF)
     """
-    policy = permission.network_policy
-    if hasattr(policy, "value"):
-        policy = policy.value  # Enum unwrap
+    # NetworkPolicy is an Enum(str, Enum); comparing enum members against
+    # other enum members works, and against raw strings works because the
+    # mixin makes them str subclasses. We compare via the enum to keep mypy
+    # happy without losing the "str input" tolerance.
+    policy = NetworkPolicy(permission.network_policy)
 
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -172,17 +172,17 @@ def check_network_allowed(
     if host in {"localhost", "0.0.0.0"} or host.endswith(".local") or _is_private_ip(host):
         raise PermissionDeniedError(url, f"host {host} blocked by global SSRF denylist")
 
-    if policy == NetworkPolicy.NONE.value or policy == NetworkPolicy.NONE:
+    if policy is NetworkPolicy.NONE:
         raise PermissionDeniedError(url, "task network_policy=none")
 
-    if policy == NetworkPolicy.CRATES_ONLY.value or policy == NetworkPolicy.CRATES_ONLY:
+    if policy is NetworkPolicy.CRATES_ONLY:
         if host in _CRATES_ONLY_HOSTS or host.endswith(".github.io"):
             return
         raise PermissionDeniedError(
             url, f"host {host} not in crates-only allowlist {sorted(_CRATES_ONLY_HOSTS)}"
         )
 
-    if policy == NetworkPolicy.WHITELIST.value or policy == NetworkPolicy.WHITELIST:
+    if policy is NetworkPolicy.WHITELIST:
         wl = domain_whitelist or []
         if any(host == d or host.endswith("." + d) for d in wl):
             return
@@ -206,9 +206,7 @@ def _is_private_ip(host: str) -> bool:
         return True
     if re.match(r"^169\.254\.\d+\.\d+$", host):
         return True
-    if re.match(r"^127\.\d+\.\d+\.\d+$", host):
-        return True
-    return False
+    return bool(re.match(r"^127\.\d+\.\d+\.\d+$", host))
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +255,9 @@ def check_command_pattern(permission: Permission, command: str) -> None:
 
 
 __all__ = [
+    "PathMode",
+    "check_command_pattern",
+    "check_network_allowed",
     "check_path_access",
     "check_tool_allowed",
-    "check_network_allowed",
-    "check_command_pattern",
-    "PathMode",
 ]

@@ -5,6 +5,7 @@ daemon: import behavior, `is_available()` shape, and SandboxError on use
 before start. Real exec tests against a containerd daemon live in a separate
 integration suite.
 """
+
 from __future__ import annotations
 
 import pytest

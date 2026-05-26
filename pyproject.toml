@@ -59,7 +59,16 @@ select = [
   "SIM",      # simplify
   "PT",       # pytest style
 ]
-ignore = ["E501"]  # line length handled by formatter
+ignore = [
+  "E501",   # line length handled by formatter
+  "RUF002", # ambiguous unicode chars in docstrings (CJK content is intentional)
+  "RUF022", # __all__ unsorted — public API ordering is curated, not alphabetic
+  "UP042",  # Enum(str, Enum) — keep classic form for cross-version Pydantic compat
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/maf_coder/cli.py" = ["B008"]  # typer.Option in defaults is idiomatic
+"tests/**" = ["B017", "PT011", "F841"]  # broad test patterns are acceptable
 
 # ---------- Pytest ----------
 [tool.pytest.ini_options]
@@ -73,4 +82,8 @@ addopts = "-ra -q --strict-markers"
 python_version = "3.11"
 strict = true
 ignore_missing_imports = true
+# `# type: ignore` comments around the OpenAI Agents SDK are conditional —
+# they're necessary when the SDK isn't installed and become "unused" when it
+# is. Disable the warning so both code paths type-check.
+warn_unused_ignores = false
 files = ["src/maf_coder"]

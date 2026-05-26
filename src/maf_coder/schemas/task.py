@@ -3,6 +3,7 @@
 Tasks are nodes in the mission DAG. Each task is owned by one role and has a
 permission boundary that the sandbox enforces at runtime.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field

@@ -14,6 +14,7 @@ Key responsibilities (soul.md §4 + droid_whispering.yaml):
 Important: LiteLLM is imported lazily inside `complete()` so unit tests can
 exercise the routing logic without needing a real API key or network.
 """
+
 from __future__ import annotations
 
 import logging
@@ -159,9 +160,7 @@ class ModelRouter:
 
     # -- Forbidden-provider computation -----------------------------------
 
-    def _forbidden_providers_for(
-        self, role: str, *, coder_provider_in_use: str | None
-    ) -> set[str]:
+    def _forbidden_providers_for(self, role: str, *, coder_provider_in_use: str | None) -> set[str]:
         """Combine static (yaml) + dynamic (vs Coder) forbidden providers."""
         cfg = self.get_role_config(role)
         forbidden: set[str] = set(cfg.constraints.get("forbidden_providers", []))
@@ -182,9 +181,7 @@ class ModelRouter:
         3. If everything is forbidden → ProviderForbiddenError.
         """
         cfg = self.get_role_config(role)
-        forbidden = self._forbidden_providers_for(
-            role, coder_provider_in_use=coder_provider_in_use
-        )
+        forbidden = self._forbidden_providers_for(role, coder_provider_in_use=coder_provider_in_use)
 
         if _provider_of(cfg.primary.model) not in forbidden:
             return cfg.primary
@@ -194,7 +191,10 @@ class ModelRouter:
             if _provider_of(fb.model) not in forbidden:
                 logger.warning(
                     "Role %s primary %s forbidden (providers blocked: %s); using fallback %s",
-                    role, cfg.primary.model, sorted(forbidden), fb.model,
+                    role,
+                    cfg.primary.model,
+                    sorted(forbidden),
+                    fb.model,
                 )
                 return fb
 
@@ -209,9 +209,7 @@ class ModelRouter:
     ) -> list[ModelConfig]:
         """Get the ordered list of acceptable fallback models (excluding primary)."""
         cfg = self.get_role_config(role)
-        forbidden = self._forbidden_providers_for(
-            role, coder_provider_in_use=coder_provider_in_use
-        )
+        forbidden = self._forbidden_providers_for(role, coder_provider_in_use=coder_provider_in_use)
         return [fb for fb in cfg.fallback if _provider_of(fb.model) not in forbidden]
 
     # -- Sync resolution (no model call) for smoke tests -------------------
@@ -223,13 +221,9 @@ class ModelRouter:
 
         Useful for smoke tests + dry-runs without burning tokens.
         """
-        primary = self.get_primary_model(
-            role, coder_provider_in_use=coder_provider_in_use
-        )
+        primary = self.get_primary_model(role, coder_provider_in_use=coder_provider_in_use)
         chain = [primary]
-        for fb in self.get_fallback_chain(
-            role, coder_provider_in_use=coder_provider_in_use
-        ):
+        for fb in self.get_fallback_chain(role, coder_provider_in_use=coder_provider_in_use):
             # Don't duplicate primary if primary was selected from fallback list
             if fb.model != primary.model:
                 chain.append(fb)
@@ -255,9 +249,7 @@ class ModelRouter:
         try:
             from litellm import acompletion  # type: ignore[import-not-found]
         except ImportError as e:  # pragma: no cover
-            raise RuntimeError(
-                "LiteLLM not installed. Run: pip install 'litellm>=1.50.0'"
-            ) from e
+            raise RuntimeError("LiteLLM not installed. Run: pip install 'litellm>=1.50.0'") from e
 
         chain = self.resolve_chain(role, coder_provider_in_use=coder_provider_in_use)
         last_error: Exception | None = None
@@ -290,11 +282,13 @@ class ModelRouter:
                     latency_sec=latency,
                     fallback_used=(idx > 0),
                 )
-            except Exception as e:  # noqa: BLE001 — we deliberately walk through any failure
+            except Exception as e:
                 last_error = e
                 logger.warning(
                     "Model call failed: role=%s model=%s error=%r; trying next.",
-                    role, model_cfg.model, e,
+                    role,
+                    model_cfg.model,
+                    e,
                 )
                 continue
 

@@ -1,7 +1,7 @@
 """LocalShellSandbox tests (AGENT_TOOLS_SPEC §15 — local backend)."""
+
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest

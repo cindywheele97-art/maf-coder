@@ -4,6 +4,7 @@ These are the canonical return types the LLM sees as tool output. Keeping
 them as frozen dataclasses (rather than dicts) prevents agents from depending
 on incidental field ordering and lets `mypy` catch field renames.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

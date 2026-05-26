@@ -9,9 +9,11 @@ The contract is THE single most important artifact in the framework:
 This file is the empirical core of "soul.md §2 总体工作原则" — "验证合约未签发，
 实现阶段不得启动".
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from .common import VerificationMethod
@@ -56,7 +58,7 @@ class ValidationContract(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
     mission_id: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     created_by: str = "orchestrator"
     locked: bool = Field(
         default=True,

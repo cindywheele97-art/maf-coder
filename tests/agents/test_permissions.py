@@ -1,4 +1,5 @@
 """Permission layer tests (AGENT_TOOLS_SPEC §5)."""
+
 from __future__ import annotations
 
 import pytest
@@ -35,9 +36,7 @@ class TestCheckPathAccess:
             check_path_access(_perm(), "src/foo.rs", mode="write")
 
     def test_allowed_path_exact(self) -> None:
-        check_path_access(
-            _perm(allowed_paths=["src/foo.rs"]), "src/foo.rs", mode="write"
-        )
+        check_path_access(_perm(allowed_paths=["src/foo.rs"]), "src/foo.rs", mode="write")
 
     def test_allowed_path_glob(self) -> None:
         check_path_access(_perm(allowed_paths=["src/*.rs"]), "src/foo.rs", mode="write")
@@ -50,9 +49,7 @@ class TestCheckPathAccess:
 
     def test_disallowed_path(self) -> None:
         with pytest.raises(PermissionDeniedError):
-            check_path_access(
-                _perm(allowed_paths=["src/foo.rs"]), "src/bar.rs", mode="write"
-            )
+            check_path_access(_perm(allowed_paths=["src/foo.rs"]), "src/bar.rs", mode="write")
 
     def test_path_traversal_rejected(self) -> None:
         with pytest.raises(PermissionDeniedError):
@@ -87,9 +84,7 @@ class TestCheckNetworkAllowed:
             check_network_allowed(_perm(network=NetworkPolicy.NONE), "https://crates.io/x")
 
     def test_crates_only_allows_crates_io(self) -> None:
-        check_network_allowed(
-            _perm(network=NetworkPolicy.CRATES_ONLY), "https://crates.io/api/v1"
-        )
+        check_network_allowed(_perm(network=NetworkPolicy.CRATES_ONLY), "https://crates.io/api/v1")
 
     def test_crates_only_allows_docs_rs(self) -> None:
         check_network_allowed(

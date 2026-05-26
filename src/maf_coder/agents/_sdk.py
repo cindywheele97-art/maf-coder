@@ -9,9 +9,11 @@ When the SDK is missing, `SDK_AVAILABLE` is False and the public names below
 become inert placeholders. `BaseAgent.run` will refuse to call into the SDK
 unless `SDK_AVAILABLE` is True OR a subclass overrides `_execute_sdk`.
 """
+
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 SDK_AVAILABLE: bool = False
 SDK_PACKAGE: str | None = None
@@ -21,13 +23,39 @@ Runner: Any = None
 ModelSettings: Any = None
 LitellmModel: Any = None
 
+_F = TypeVar("_F", bound=Callable[..., Any])
 
-def _identity(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Fallback no-op decorator standing in for `@function_tool`."""
+
+def function_tool(fn: _F) -> _F:
+    """No-op decorator standing in for `@function_tool` at factory time.
+
+    Tool factories declare `@function_tool` so their docstring + signature
+    become the SDK contract, but we deliberately keep the decorated object as
+    a plain callable so unit tests can invoke it directly without faking the
+    SDK Runner. The real SDK wrapper is applied at the SDK boundary
+    (`BaseAgent._execute_sdk` calls `_sdk.wrap_for_sdk(tool)`).
+
+    This signature uses a TypeVar so mypy preserves the original callable's
+    return type — necessary because `make_*` factories type-annotate their
+    nested function and the outer factory advertises it as `Callable[..., Any]`.
+    """
     return fn
 
 
-function_tool: Callable[..., Any] = _identity
+# The real SDK `@function_tool` decorator, bound by `_try_import` when present.
+
+sdk_function_tool: Callable[..., Any] | None = None
+
+
+def wrap_for_sdk(tool: Callable[..., Any]) -> Any:
+    """Decorate a tool callable with the real SDK `@function_tool` if available.
+
+    Used by `BaseAgent._execute_sdk` immediately before handing the tools to
+    `agents.Agent(...)`. If the SDK is absent, returns the bare callable.
+    """
+    if sdk_function_tool is None:
+        return tool
+    return sdk_function_tool(tool)
 
 
 def _try_import() -> None:
@@ -37,7 +65,8 @@ def _try_import() -> None:
     and fall back to `openai_agents` (older releases). The Phase B spec uses
     the `openai_agents` import path; this shim tolerates either.
     """
-    global SDK_AVAILABLE, SDK_PACKAGE, Agent, Runner, ModelSettings, LitellmModel, function_tool
+    global SDK_AVAILABLE, SDK_PACKAGE, Agent, Runner, ModelSettings, LitellmModel
+    global sdk_function_tool
 
     for pkg in ("agents", "openai_agents"):
         try:
@@ -45,16 +74,14 @@ def _try_import() -> None:
         except Exception:
             continue
         try:
-            Agent = getattr(mod, "Agent")
-            Runner = getattr(mod, "Runner")
-            function_tool = getattr(mod, "function_tool", _identity)
+            Agent = mod.Agent
+            Runner = mod.Runner
+            sdk_function_tool = getattr(mod, "function_tool", None)
         except AttributeError:
             continue
         # ModelSettings + LitellmModel are optional — they may live in submodules
         try:
-            settings_mod = __import__(
-                f"{pkg}.model_settings", fromlist=["ModelSettings"]
-            )
+            settings_mod = __import__(f"{pkg}.model_settings", fromlist=["ModelSettings"])
             ModelSettings = getattr(settings_mod, "ModelSettings", None)
         except Exception:
             ModelSettings = getattr(mod, "ModelSettings", None)

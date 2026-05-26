@@ -4,6 +4,7 @@ Phase A 退出门槛: `pytest tests/test_router.py` 全过.
 These tests do NOT call any real model — they verify routing logic only.
 The smoke test for actual API calls lives in tests/smoke/ (run manually).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -151,9 +152,7 @@ class TestPrimaryResolutionNoConstraints:
 class TestStaticForbiddenProviders:
     """review_validator and adversarial_subagent forbid anthropic in the yaml."""
 
-    def test_review_validator_skips_anthropic_when_in_yaml(
-        self, minimal_config: Path
-    ) -> None:
+    def test_review_validator_skips_anthropic_when_in_yaml(self, minimal_config: Path) -> None:
         router = ModelRouter(minimal_config)
         m = router.get_primary_model("review_validator")
         assert "anthropic" not in m.model
@@ -179,14 +178,10 @@ class TestDynamicCoderConstraint:
     spots between Coder and its reviewers (soul.md §3.5).
     """
 
-    def test_coder_on_openai_pushes_review_validator_to_google(
-        self, minimal_config: Path
-    ) -> None:
+    def test_coder_on_openai_pushes_review_validator_to_google(self, minimal_config: Path) -> None:
         router = ModelRouter(minimal_config)
         # Coder using openai → review_validator can't use openai → falls back to google
-        m = router.get_primary_model(
-            "review_validator", coder_provider_in_use="openai"
-        )
+        m = router.get_primary_model("review_validator", coder_provider_in_use="openai")
         assert "openai" not in m.model
         assert "anthropic" not in m.model  # static constraint still applies
         assert "google" in m.model
@@ -196,29 +191,19 @@ class TestDynamicCoderConstraint:
     ) -> None:
         router = ModelRouter(minimal_config)
         # Coder using anthropic → review_validator's primary openai is fine (anthropic already forbidden statically)
-        m = router.get_primary_model(
-            "review_validator", coder_provider_in_use="anthropic"
-        )
+        m = router.get_primary_model("review_validator", coder_provider_in_use="anthropic")
         assert m.model == "openai/gpt-5"
 
-    def test_coder_on_google_pushes_subagent_to_openai(
-        self, minimal_config: Path
-    ) -> None:
+    def test_coder_on_google_pushes_subagent_to_openai(self, minimal_config: Path) -> None:
         router = ModelRouter(minimal_config)
         # Coder using google → adversarial_subagent primary (google) blocked → falls back to openai
-        m = router.get_primary_model(
-            "adversarial_subagent", coder_provider_in_use="google"
-        )
+        m = router.get_primary_model("adversarial_subagent", coder_provider_in_use="google")
         assert m.model == "openai/gpt-5"
 
-    def test_orchestrator_not_affected_by_coder_constraint(
-        self, minimal_config: Path
-    ) -> None:
+    def test_orchestrator_not_affected_by_coder_constraint(self, minimal_config: Path) -> None:
         """Orchestrator is not a validator; coder_provider_in_use does NOT constrain it."""
         router = ModelRouter(minimal_config)
-        m = router.get_primary_model(
-            "orchestrator", coder_provider_in_use="anthropic"
-        )
+        m = router.get_primary_model("orchestrator", coder_provider_in_use="anthropic")
         # Orchestrator's primary is anthropic; even though Coder is also anthropic, that's fine
         assert m.model == "anthropic/claude-opus-4-7"
 
@@ -236,9 +221,7 @@ class TestExhaustion:
         # We simulate by manually patching the constraint structure on adversarial_subagent.
         cfg = router.config.roles["adversarial_subagent"]
         # Force a constraint that blocks every model in the chain
-        cfg.constraints = {
-            "forbidden_providers": ["anthropic", "openai", "google"]
-        }
+        cfg.constraints = {"forbidden_providers": ["anthropic", "openai", "google"]}
         with pytest.raises(ProviderForbiddenError):
             router.get_primary_model("adversarial_subagent")
 
@@ -249,9 +232,7 @@ class TestExhaustion:
 
 
 class TestChainResolution:
-    def test_chain_contains_primary_then_fallbacks(
-        self, minimal_config: Path
-    ) -> None:
+    def test_chain_contains_primary_then_fallbacks(self, minimal_config: Path) -> None:
         router = ModelRouter(minimal_config)
         chain = router.resolve_chain("coder_worker")
         assert chain[0].model == "anthropic/claude-sonnet-4-6"
@@ -259,9 +240,7 @@ class TestChainResolution:
 
     def test_chain_excludes_forbidden_models(self, minimal_config: Path) -> None:
         router = ModelRouter(minimal_config)
-        chain = router.resolve_chain(
-            "review_validator", coder_provider_in_use="openai"
-        )
+        chain = router.resolve_chain("review_validator", coder_provider_in_use="openai")
         # openai/gpt-5 (primary) and anthropic (static) blocked → only google left
         assert len(chain) == 1
         assert "google" in chain[0].model

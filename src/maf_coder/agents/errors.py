@@ -13,6 +13,7 @@ Layered with care:
 - `ExternalContentError` — sanitizer rejection or HTTP fetch errors.
 - `BudgetExceededError` — token / runtime / cost exhaustion.
 """
+
 from __future__ import annotations
 
 
@@ -73,12 +74,12 @@ class AssertionUnknownError(ToolError):
 
 
 __all__ = [
-    "ToolError",
+    "ArtifactError",
+    "AssertionUnknownError",
+    "BudgetExceededError",
+    "ExternalContentError",
     "PermissionDeniedError",
     "SandboxError",
-    "ArtifactError",
-    "ExternalContentError",
-    "BudgetExceededError",
     "TaskAlreadyDispatchedError",
-    "AssertionUnknownError",
+    "ToolError",
 ]

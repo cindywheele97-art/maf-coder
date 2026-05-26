@@ -2,6 +2,7 @@
 
 Phase A 退出门槛: `pytest tests/test_event_log.py` 全过.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from maf_coder.blackboard import Event, EventKind, EventLog
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,12 +98,22 @@ class TestFiltering:
     def test_filter_by_enum(self, log: EventLog) -> None:
         log.log_mission_start(mission_id="m1", goal="x")
         log.log_llm_call(
-            mission_id="m1", actor="orchestrator", model="anthropic/opus",
-            tokens_in=100, tokens_out=200, cost_usd=0.05, latency_sec=2.0,
+            mission_id="m1",
+            actor="orchestrator",
+            model="anthropic/opus",
+            tokens_in=100,
+            tokens_out=200,
+            cost_usd=0.05,
+            latency_sec=2.0,
         )
         log.log_llm_call(
-            mission_id="m1", actor="coder_worker", model="anthropic/sonnet",
-            tokens_in=500, tokens_out=300, cost_usd=0.03, latency_sec=4.0,
+            mission_id="m1",
+            actor="coder_worker",
+            model="anthropic/sonnet",
+            tokens_in=500,
+            tokens_out=300,
+            cost_usd=0.03,
+            latency_sec=4.0,
         )
         llm_events = list(log.filter_kind(EventKind.LLM_CALL))
         assert len(llm_events) == 2
@@ -123,20 +133,40 @@ class TestFiltering:
 class TestAggregations:
     def _populate_llm_calls(self, log: EventLog) -> None:
         log.log_llm_call(
-            mission_id="m1", actor="orchestrator", model="anthropic/opus",
-            tokens_in=1000, tokens_out=500, cost_usd=0.10, latency_sec=3.0,
+            mission_id="m1",
+            actor="orchestrator",
+            model="anthropic/opus",
+            tokens_in=1000,
+            tokens_out=500,
+            cost_usd=0.10,
+            latency_sec=3.0,
         )
         log.log_llm_call(
-            mission_id="m1", actor="coder_worker", model="anthropic/sonnet",
-            tokens_in=5000, tokens_out=2000, cost_usd=0.30, latency_sec=8.0,
+            mission_id="m1",
+            actor="coder_worker",
+            model="anthropic/sonnet",
+            tokens_in=5000,
+            tokens_out=2000,
+            cost_usd=0.30,
+            latency_sec=8.0,
         )
         log.log_llm_call(
-            mission_id="m1", actor="coder_worker", model="anthropic/sonnet",
-            tokens_in=3000, tokens_out=1500, cost_usd=0.20, latency_sec=6.0,
+            mission_id="m1",
+            actor="coder_worker",
+            model="anthropic/sonnet",
+            tokens_in=3000,
+            tokens_out=1500,
+            cost_usd=0.20,
+            latency_sec=6.0,
         )
         log.log_llm_call(
-            mission_id="m1", actor="review_validator", model="openai/gpt-5",
-            tokens_in=2000, tokens_out=800, cost_usd=0.15, latency_sec=5.0,
+            mission_id="m1",
+            actor="review_validator",
+            model="openai/gpt-5",
+            tokens_in=2000,
+            tokens_out=800,
+            cost_usd=0.15,
+            latency_sec=5.0,
         )
 
     def test_total_cost(self, log: EventLog) -> None:
@@ -167,12 +197,13 @@ class TestAggregations:
         log.log_task_dispatched(
             mission_id="m1", task_id="t3", owner="research_worker", priority="low"
         )
-        log.log_task_complete(
-            mission_id="m1", task_id="t1", actor="coder_worker", duration_sec=300
-        )
+        log.log_task_complete(mission_id="m1", task_id="t1", actor="coder_worker", duration_sec=300)
         log.log_task_failed(
-            mission_id="m1", task_id="t2", actor="coder_worker",
-            reason="clippy errors", will_retry=True,
+            mission_id="m1",
+            task_id="t2",
+            actor="coder_worker",
+            reason="clippy errors",
+            will_retry=True,
         )
         outcomes = log.task_outcomes()
         assert outcomes == {"t1": "complete", "t2": "failed", "t3": "dispatched"}
@@ -222,12 +253,14 @@ class TestLastEvent:
 
 class TestDirectAppend:
     def test_custom_event(self, log: EventLog) -> None:
-        log.append(Event(
-            kind="custom_phase_a_marker",
-            mission_id="m1",
-            actor="orchestrator",
-            payload={"phase": "A", "milestone": "schema layer done"},
-        ))
+        log.append(
+            Event(
+                kind="custom_phase_a_marker",
+                mission_id="m1",
+                actor="orchestrator",
+                payload={"phase": "A", "milestone": "schema layer done"},
+            )
+        )
         events = list(log.filter_kind("custom_phase_a_marker"))
         assert len(events) == 1
         assert events[0].payload["phase"] == "A"

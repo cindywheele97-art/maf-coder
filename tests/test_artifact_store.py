@@ -2,9 +2,10 @@
 
 Phase A 退出门槛: `pytest tests/test_artifact_store.py` 全过.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from maf_coder.blackboard import (
 from maf_coder.schemas import (
     Assertion,
     BehaviorObservation,
+    BehaviorProbeSpec,
     BehaviorVerdict,
     BudgetStatus,
     CargoGateResults,
@@ -26,7 +28,6 @@ from maf_coder.schemas import (
     Handoff,
     MilestoneStatus,
     MissionState,
-    BehaviorProbeSpec,
     ProjectProfile,
     ProjectType,
     ReviewVerdict,
@@ -38,7 +39,6 @@ from maf_coder.schemas import (
     VerdictResult,
     VerificationMethod,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -234,9 +234,7 @@ class TestContractWriteOnce:
 
 
 class TestTypedRoundtrips:
-    def test_project_profile(
-        self, store: ArtifactStore, sample_profile: ProjectProfile
-    ) -> None:
+    def test_project_profile(self, store: ArtifactStore, sample_profile: ProjectProfile) -> None:
         store.save_project_profile(sample_profile)
         loaded = store.load_project_profile()
         assert loaded.project_type == sample_profile.project_type
@@ -306,7 +304,7 @@ class TestTypedRoundtrips:
     def test_mission_state(self, store: ArtifactStore) -> None:
         s = MissionState(
             mission_id="m-test-001",
-            started_at=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+            started_at=datetime(2026, 5, 20, 10, 0, tzinfo=UTC),
             current_milestone="m2",
             completed_milestones=["m1"],
             cumulative_cost_usd=12.34,
@@ -343,7 +341,7 @@ class TestStatusReport:
         return StatusReport(
             report_number=n,
             mission_id="m-test-001",
-            mission_started_at=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+            mission_started_at=datetime(2026, 5, 20, 10, 0, tzinfo=UTC),
             elapsed_hours=4.5,
             milestones=[
                 MilestoneStatus(milestone_id="m1", state="complete"),

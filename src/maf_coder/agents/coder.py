@@ -7,6 +7,7 @@ agent. The Coder's "structured output" — the Handoff — is saved via the
 `CoderRunSummary` containing the closing message + the handoff path on disk
 (if one was saved).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -99,4 +100,4 @@ class CoderWorkerAgent(BaseAgent[CoderRunSummary]):
         return CoderRunSummary(final_message="", handoff_path="", tools_invoked=[])
 
 
-__all__ = ["CoderWorkerAgent", "CoderRunSummary"]
+__all__ = ["CoderRunSummary", "CoderWorkerAgent"]

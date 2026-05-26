@@ -3,6 +3,7 @@
 These map 1:1 to the role / intent / severity vocabulary in agent_team_soul.md.
 Changes here are semantically MAJOR — they reshape what's expressible in messages.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -50,9 +51,9 @@ class Severity(str, Enum):
     """Security finding severity (soul.md §3.4)."""
 
     CRITICAL = "critical"  # Blocks PR, escalate to Human Gate
-    HIGH = "high"          # Blocks ReviewValidator pass
-    MEDIUM = "medium"      # Risk register entry, PR description note
-    LOW = "low"            # PR description note only
+    HIGH = "high"  # Blocks ReviewValidator pass
+    MEDIUM = "medium"  # Risk register entry, PR description note
+    LOW = "low"  # PR description note only
 
 
 class VerdictResult(str, Enum):
@@ -88,7 +89,7 @@ class ProjectType(str, Enum):
 class NetworkPolicy(str, Enum):
     """Per-task network access policy. See soul.md §7.1."""
 
-    OPEN = "open"                # Research worker default — full internet
+    OPEN = "open"  # Research worker default — full internet
     CRATES_ONLY = "crates_only"  # Only crates.io / docs.rs / GitHub
-    WHITELIST = "whitelist"      # Allow-list domains only
-    NONE = "none"                # Sandbox, no network (Coder default)
+    WHITELIST = "whitelist"  # Allow-list domains only
+    NONE = "none"  # Sandbox, no network (Coder default)

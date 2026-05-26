@@ -14,11 +14,11 @@ Tools follow the factory pattern from AGENT_TOOLS_SPEC §3: each
 `ctx`. The shared helper `record_tool_call` appends to `ctx.tools_invoked`
 and emits an EventLog `tool_call` event after the permission gate passes.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from ..base import TaskContext
 
@@ -51,7 +51,7 @@ def record_tool_call(
             duration_sec=duration_sec,
             task_id=ctx.task.task_id,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("event_log.log_tool_call failed for tool=%s; continuing", tool)
 
 

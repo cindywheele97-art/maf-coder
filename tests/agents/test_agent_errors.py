@@ -1,4 +1,5 @@
 """Errors hierarchy tests (AGENT_TOOLS_SPEC §3)."""
+
 from __future__ import annotations
 
 import pytest

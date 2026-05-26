@@ -5,9 +5,11 @@ These three together make multi-day missions resumable and observable:
 - Checkpoint: per-milestone resume point (soul.md §5.3)
 - MissionState: ever-updating runtime state of the mission
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -51,7 +53,7 @@ class StatusReport(BaseModel):
 
     report_number: int = Field(ge=1)
     mission_id: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     mission_started_at: datetime
     elapsed_hours: float
     milestones: list[MilestoneStatus]
@@ -86,7 +88,7 @@ class Checkpoint(BaseModel):
     artifact_archive_path: str = Field(description="Relative path to archived artifacts directory")
     cumulative_cost_usd: float
     cumulative_wall_clock_hours: float
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class MissionState(BaseModel):

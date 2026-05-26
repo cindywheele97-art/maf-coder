@@ -33,9 +33,11 @@ The interface deliberately models "container_path" as a relative path under
 `/workspace` even for the local backend, so tools written against the
 interface don't need to know which backend they're talking to.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -251,12 +253,10 @@ class LocalShellSandbox(SandboxClient):
                 proc.communicate(stdin_bytes), timeout=timeout_sec
             )
             exit_code = proc.returncode if proc.returncode is not None else -1
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
-            try:
+            with contextlib.suppress(Exception):
                 await proc.communicate()
-            except Exception:  # noqa: BLE001
-                pass
             duration = time.monotonic() - t0
             return CommandResult(
                 command=cmd_str,
@@ -294,10 +294,8 @@ class LocalShellSandbox(SandboxClient):
                 os.fsync(fh.fileno())
             os.replace(tmp, host)
         except Exception:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 Path(tmp).unlink()
-            except FileNotFoundError:
-                pass
             raise
 
     async def read_file(
@@ -386,7 +384,7 @@ class DockerSandbox(SandboxClient):
             c = docker.from_env()
             c.ping()
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     # -- Lifecycle --------------------------------------------------------
@@ -400,14 +398,12 @@ class DockerSandbox(SandboxClient):
         try:
             import docker  # type: ignore[import-not-found]
         except ImportError as e:
-            raise SandboxError(
-                "docker-py not installed. Install with `pip install docker`."
-            ) from e
+            raise SandboxError("docker-py not installed. Install with `pip install docker`.") from e
 
         self._client = docker.from_env()
         try:
             self._client.ping()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise SandboxError(f"Docker daemon unreachable: {e}") from e
 
         mount_path = Path(workspace_mount).resolve()
@@ -442,11 +438,11 @@ class DockerSandbox(SandboxClient):
         loop = asyncio.get_event_loop()
         try:
             await loop.run_in_executor(None, self._container.stop)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("DockerSandbox stop() failed; continuing")
         try:
             await loop.run_in_executor(None, lambda: self._container.remove(v=not preserve_volumes))
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("DockerSandbox remove() failed; continuing")
         self._started = False
         self._container = None
@@ -483,7 +479,7 @@ class DockerSandbox(SandboxClient):
                 ),
                 timeout=timeout_sec,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = time.monotonic() - t0
             return CommandResult(
                 command=cmd_str,
@@ -518,15 +514,11 @@ class DockerSandbox(SandboxClient):
         norm = self._resolve(container_path)
         # Use a heredoc-style write through `tee` to keep this self-contained.
         # For larger files / binary, dockerpy's `put_archive` would be faster.
-        result = await self.exec(
-            f"mkdir -p {os.path.dirname(str(norm))}", timeout_sec=10
-        )
+        result = await self.exec(f"mkdir -p {os.path.dirname(str(norm))}", timeout_sec=10)
         if result.exit_code != 0:
             raise SandboxError(f"mkdir failed: {result.stderr}")
         tmp = f"{norm}.tmp.{uuid.uuid4().hex[:8]}"
-        cmd = (
-            f"cat > {tmp} && mv {tmp} {norm}"
-        )
+        cmd = f"cat > {tmp} && mv {tmp} {norm}"
         result = await self.exec(cmd, stdin=content, timeout_sec=30)
         if result.exit_code != 0:
             raise SandboxError(f"write_file failed: {result.stderr}")
@@ -571,4 +563,4 @@ class DockerSandbox(SandboxClient):
             return False
 
 
-__all__ = ["SandboxClient", "LocalShellSandbox", "DockerSandbox"]
+__all__ = ["DockerSandbox", "LocalShellSandbox", "SandboxClient"]

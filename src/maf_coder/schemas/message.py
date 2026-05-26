@@ -3,9 +3,11 @@
 Every message between agents — Orchestrator -> Worker, Worker -> Validator, etc. —
 must conform to this schema. Free-form chat between agents is forbidden by design.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from .common import Intent, RiskLevel, Role
@@ -61,4 +63,4 @@ class Message(BaseModel):
     output_contract: str = Field(description="Expected output description")
     risk_flags: list[RiskFlag] = Field(default_factory=list)
     budgets: Budgets
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -6,6 +6,7 @@ A worker that doesn't produce a structured handoff has not finished its task.
 v3.1 addition: a "too clean" handoff (no incomplete/issues/deviations) is
 automatically suspect and triggers ReviewValidator second-pass — see §11.3.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
@@ -18,7 +19,9 @@ class CommandRun(BaseModel):
 
     command: str
     exit_code: int
-    summary: str = Field(description="Short result summary, e.g. '47 tests passed' or 'clippy clean'")
+    summary: str = Field(
+        description="Short result summary, e.g. '47 tests passed' or 'clippy clean'"
+    )
 
 
 class DependencyChange(BaseModel):
@@ -100,6 +103,4 @@ class Handoff(BaseModel):
         error (the work may legitimately be that clean), but it is suspicious enough
         to warrant adversarial verification.
         """
-        return not (
-            self.incomplete or self.issues_discovered or self.deviations_from_plan
-        )
+        return not (self.incomplete or self.issues_discovered or self.deviations_from_plan)

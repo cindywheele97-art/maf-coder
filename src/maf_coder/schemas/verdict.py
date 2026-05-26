@@ -3,9 +3,11 @@
 Verdicts are the *only* gate between Coder output and PR creation.
 Each one is independently signed by an agent and stored as JSON for audit.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from .common import Severity, VerdictResult
@@ -64,7 +66,7 @@ class ReviewVerdict(BaseModel):
         default_factory=list,
         description="v3.1 — Tests where adversarial sub-agent suspects intent is not verified",
     )
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class BehaviorObservation(BaseModel):
@@ -93,7 +95,7 @@ class BehaviorVerdict(BaseModel):
     observations: list[BehaviorObservation] = Field(default_factory=list)
     evidence_path: str = Field(description="Relative path to behavior_evidence/ directory")
     failure_reason: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SecurityFinding(BaseModel):
@@ -102,7 +104,9 @@ class SecurityFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     severity: Severity
-    category: str = Field(description="'audit' | 'deny' | 'geiger' | 'secret' | 'unsafe' | 'license'")
+    category: str = Field(
+        description="'audit' | 'deny' | 'geiger' | 'secret' | 'unsafe' | 'license'"
+    )
     description: str
     location: str | None = Field(default=None, description="file:line or crate name")
     suggestion: str | None = None
@@ -118,7 +122,7 @@ class SecurityVerdict(BaseModel):
 
     task_id: str
     findings: list[SecurityFinding]
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
