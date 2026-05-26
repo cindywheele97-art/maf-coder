@@ -125,6 +125,26 @@ _DIRS = {
 # ---------------------------------------------------------------------------
 
 
+_COMPUTED_FIELDS_CACHE: dict[type, set[str]] = {}
+
+
+def _computed_field_names(cls: type) -> set[str]:
+    """Return the computed-field names for a Pydantic v2 model.
+
+    Computed fields are derived from other fields and re-derive on load, so we
+    must exclude them from the serialized payload — re-loading would otherwise
+    fail under `extra="forbid"` because the computed key would look like an
+    unknown input. Cached per class to avoid repeated introspection.
+    """
+    if cls not in _COMPUTED_FIELDS_CACHE:
+        names: set[str] = set()
+        computed = getattr(cls, "model_computed_fields", None)
+        if computed:
+            names = set(computed.keys())
+        _COMPUTED_FIELDS_CACHE[cls] = names
+    return _COMPUTED_FIELDS_CACHE[cls]
+
+
 def _atomic_write(target: Path, content: bytes) -> None:
     """Write `content` to `target` atomically.
 
@@ -217,7 +237,12 @@ class ArtifactStore:
 
     def write_json(self, relpath: str, data: dict | list | BaseModel) -> Path:
         if isinstance(data, BaseModel):
-            payload = data.model_dump_json(indent=2)
+            payload = json.dumps(
+                data.model_dump(mode="json", exclude=_computed_field_names(type(data))),
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
         else:
             payload = json.dumps(data, indent=2, ensure_ascii=False, default=str)
         return self.write_text(relpath, payload + "\n")
@@ -227,7 +252,9 @@ class ArtifactStore:
 
     def write_yaml(self, relpath: str, data: dict | BaseModel) -> Path:
         if isinstance(data, BaseModel):
-            payload_dict = data.model_dump(mode="json")
+            payload_dict = data.model_dump(
+                mode="json", exclude=_computed_field_names(type(data))
+            )
         else:
             payload_dict = data
         return self.write_text(
