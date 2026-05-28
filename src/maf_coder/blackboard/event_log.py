@@ -75,6 +75,10 @@ class EventKind(str, Enum):
     SECOND_PASS_TRIGGERED = "second_pass_triggered"  # v3.1 — handoff completeness rule fired
     SECURITY_FINDING = "security_finding"
 
+    # External / network (Phase C — soul.md §7)
+    EXTERNAL_CONTENT_RECEIVED = "external_content_received"
+    EGRESS_REQUEST = "egress_request"
+
     # Escalation & budget
     ESCALATION_TRIGGERED = "escalation_triggered"
     BUDGET_ALERT = "budget_alert"
@@ -476,6 +480,64 @@ class EventLog:
                 trace_id=mission_id,
                 actor="orchestrator",
                 payload={"message_path": message_path, "urgent": urgent},
+            )
+        )
+
+    def log_external_content_received(
+        self,
+        *,
+        mission_id: str,
+        actor: str,
+        original_url: str,
+        final_url: str,
+        content_type: str,
+        sanitization_actions: list[str],
+        task_id: str | None = None,
+    ) -> None:
+        """Soul.md §7 — record that the sanitizer accepted external content."""
+        self.append(
+            Event(
+                kind=EventKind.EXTERNAL_CONTENT_RECEIVED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={
+                    "original_url": original_url,
+                    "final_url": final_url,
+                    "content_type": content_type,
+                    "sanitization_actions": sanitization_actions,
+                },
+            )
+        )
+
+    def log_egress_request(
+        self,
+        *,
+        mission_id: str,
+        actor: str,
+        url: str,
+        domain: str,
+        status_code: int | None = None,
+        bytes_received: int | None = None,
+        blocked_reason: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        """Soul.md §7.3 — record every outbound request (allowed or blocked)."""
+        self.append(
+            Event(
+                kind=EventKind.EGRESS_REQUEST.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={
+                    "url": url,
+                    "domain": domain,
+                    "status_code": status_code,
+                    "bytes_received": bytes_received,
+                    "blocked_reason": blocked_reason,
+                },
             )
         )
 

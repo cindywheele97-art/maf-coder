@@ -13,6 +13,7 @@ from maf_coder.schemas import (
     Assertion,
     Budgets,
     CommandRun,
+    EgressRecord,
     Feature,
     Handoff,
     Intent,
@@ -231,3 +232,33 @@ class TestReviewVerdict:
         )
         assert verdict.triggered_second_pass is True
         assert len(verdict.hardcoded_test_warnings) == 1
+
+
+# ============================================================================
+# External (SanitizedContent + EgressRecord)
+# ============================================================================
+
+
+class TestEgressRecord:
+    def test_minimal_valid(self) -> None:
+        r = EgressRecord(
+            mission_id="m1",
+            task_id="t1",
+            url="https://crates.io/api/v1/crates/serde",
+            domain="crates.io",
+            status_code=200,
+            bytes_received=4242,
+        )
+        assert r.method == "GET"
+        assert r.blocked_reason is None
+
+    def test_blocked_record(self) -> None:
+        r = EgressRecord(
+            mission_id="m1",
+            task_id="t1",
+            url="https://evil.example.com",
+            domain="evil.example.com",
+            blocked_reason="domain not in whitelist",
+        )
+        assert r.status_code is None
+        assert r.blocked_reason == "domain not in whitelist"

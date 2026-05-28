@@ -8,6 +8,7 @@ on incidental field ordering and lets `mypy` catch field renames.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Literal
 
 
@@ -60,7 +61,9 @@ class SanitizedContent:
     """Outcome of an external HTTP fetch with sanitizer applied.
 
     `original_url` is preserved for citation. `sanitization_actions` records
-    what the sanitizer modified.
+    what the sanitizer modified. `content` is already wrapped with
+    `<external source="..." retrieved="...">...</external>` tags + a
+    downstream-warning preamble before reaching the agent.
     """
 
     original_url: str
@@ -68,6 +71,7 @@ class SanitizedContent:
     content: str
     content_type: str
     sanitization_actions: list[str] = field(default_factory=list)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True)

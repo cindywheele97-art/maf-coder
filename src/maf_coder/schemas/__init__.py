@@ -25,6 +25,7 @@ from .common import (
     VerificationMethod,
 )
 from .contract import Assertion, Feature, ValidationContract
+from .external import EgressRecord
 from .handoff import (
     CommandRun,
     ContractCoverage,
@@ -107,6 +108,8 @@ __all__ = [
     "BehaviorObservation",
     "CargoGateResults",
     "SecurityFinding",
+    # External / network
+    "EgressRecord",
     # Lifecycle
     "StatusReport",
     "Checkpoint",

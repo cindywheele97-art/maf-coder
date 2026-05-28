@@ -23,7 +23,9 @@ from typing import Any
 from ..agents.base import BaseAgent
 from ..agents.coder import CoderWorkerAgent
 from ..agents.orchestrator import OrchestratorAgent
+from ..agents.research import ResearchWorkerAgent
 from ..agents.review import ReviewValidatorAgent
+from ..agents.security import SecurityWorkerAgent
 from ..blackboard import ArtifactStore
 from ..models import ModelRouter
 from ..sandbox import LocalShellSandbox, SandboxClient
@@ -159,11 +161,15 @@ class MissionDriver:
         orch = OrchestratorAgent(**common)
         coder = CoderWorkerAgent(**common)
         reviewer = ReviewValidatorAgent(**common)
+        researcher = ResearchWorkerAgent(**common)
+        security = SecurityWorkerAgent(**common)
 
         agent_factory: dict[Role, Callable[[], BaseAgent[Any]]] = {
             Role.ORCHESTRATOR: lambda: orch,
             Role.CODER_WORKER: lambda: coder,
             Role.REVIEW_VALIDATOR: lambda: reviewer,
+            Role.RESEARCH_WORKER: lambda: researcher,
+            Role.SECURITY_WORKER: lambda: security,
         }
         scheduler = Scheduler(
             store=self.store,

@@ -1,0 +1,481 @@
+"""Research Worker tool factory tests (AGENT_TOOLS_SPEC §9).
+
+`fetch_url` uses an injected fetcher so tests never touch the network.
+`grep` / `glob` / `cargo_*` go through a real LocalShellSandbox.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import pytest
+
+from maf_coder.agents.base import TaskContext
+from maf_coder.agents.errors import (
+    ExternalContentError,
+    PermissionDeniedError,
+    ToolError,
+)
+from maf_coder.agents.tools.research_tools import (
+    build_research_tools,
+    make_cargo_metadata,
+    make_cargo_tree,
+    make_fetch_url,
+    make_glob,
+    make_grep,
+    make_save_code_map,
+    make_save_dependency_brief,
+    make_save_research_note,
+    make_save_workspace_overview,
+)
+from maf_coder.blackboard import ArtifactStore
+from maf_coder.blackboard.event_log import EventKind
+from maf_coder.models.router import ModelRouter
+from maf_coder.sandbox import LocalShellSandbox
+from maf_coder.schemas import (
+    NetworkPolicy,
+    Permission,
+    RiskLevel,
+    Role,
+    Task,
+    TaskBudget,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def router(tmp_path: Path) -> ModelRouter:
+    cfg = tmp_path / "droid.yaml"
+    cfg.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  research_worker:\n"
+        "    primary:\n"
+        "      model: anthropic/x\n"
+        "      temperature: 0.1\n"
+        "      max_tokens: 1000\n"
+        "    fallback: []\n"
+    )
+    return ModelRouter(cfg)
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> ArtifactStore:
+    return ArtifactStore(tmp_path / "missions", "m1")
+
+
+@pytest.fixture
+async def sandbox(tmp_path: Path) -> AsyncIterator[LocalShellSandbox]:
+    sb = LocalShellSandbox()
+    await sb.start(workspace_mount=tmp_path / "ws")
+    await sb.exec("git init -q -b main", cwd="/workspace")
+    await sb.exec("git config user.email t@t && git config user.name t", cwd="/workspace")
+    await sb.exec("touch initial && git add -A && git commit -q -m initial", cwd="/workspace")
+    try:
+        yield sb
+    finally:
+        await sb.stop()
+
+
+def _ctx(
+    sandbox: LocalShellSandbox,
+    store: ArtifactStore,
+    router: ModelRouter,
+    *,
+    permission: Permission | None = None,
+    task_id: str = "research-1",
+    network_policy: NetworkPolicy = NetworkPolicy.OPEN,
+) -> TaskContext:
+    perm = permission or Permission(
+        allowed_paths=["**"],
+        allowed_tools=[],
+        network_policy=network_policy,
+    )
+    task = Task(
+        task_id=task_id,
+        parent_milestone="m1",
+        owner=Role.RESEARCH_WORKER,
+        priority=RiskLevel.MEDIUM,
+        risk_level=RiskLevel.LOW,
+        goal="map the axum http layer",
+        background="background",
+        acceptance_criteria=["f1.a1"],
+        required_outputs=["research_notes/axum-routing.md"],
+        permission=perm,
+        budget=TaskBudget(max_tokens=1000, max_runtime_sec=60),
+    )
+    return TaskContext(
+        task=task,
+        mission_id="m1",
+        store=store,
+        event_log=store.event_log(),
+        router=router,
+        sandbox=sandbox,
+    )
+
+
+# ---------------------------------------------------------------------------
+# fetch_url
+# ---------------------------------------------------------------------------
+
+
+def _stub_fetcher(*, body: str, content_type: str = "text/html", status: int = 200):
+    """Build a synchronous stub HTTP transport. Records call args on the closure."""
+    calls: list[tuple[str, int]] = []
+
+    def fn(url: str, timeout_sec: int) -> tuple[str, str, int, str]:
+        calls.append((url, timeout_sec))
+        return (url, content_type, status, body)
+
+    fn.calls = calls  # type: ignore[attr-defined]
+    return fn
+
+
+class TestFetchUrl:
+    @pytest.mark.asyncio
+    async def test_ok_path_sanitizes_and_logs(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        fetcher = _stub_fetcher(body="<p>safe</p><script>x()</script>")
+        tool = make_fetch_url(ctx, fetcher=fetcher)
+        result = await tool(url="https://crates.io/crates/serde")
+        assert "x()" not in result.content
+        assert "safe" in result.content
+        assert any("script" in a for a in result.sanitization_actions)
+        # Both events logged
+        kinds = {e.kind for e in ctx.event_log.iter_events()}
+        assert EventKind.EGRESS_REQUEST.value in kinds
+        assert EventKind.EXTERNAL_CONTENT_RECEIVED.value in kinds
+
+    @pytest.mark.asyncio
+    async def test_denied_by_network_policy_logs_blocked(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+    ) -> None:
+        ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.NONE)
+        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""))
+        with pytest.raises(PermissionDeniedError):
+            await tool(url="https://crates.io/")
+        egress = [
+            e for e in ctx.event_log.iter_events() if e.kind == EventKind.EGRESS_REQUEST.value
+        ]
+        assert len(egress) == 1
+        assert egress[0].payload["blocked_reason"] == "permission-denied"
+
+    @pytest.mark.asyncio
+    async def test_denied_outside_crates_only_allowlist(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+    ) -> None:
+        ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.CRATES_ONLY)
+        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""))
+        with pytest.raises(PermissionDeniedError):
+            await tool(url="https://evil.example.com/")
+        # crates.io itself is allowed
+        await tool(url="https://crates.io/")
+
+    @pytest.mark.asyncio
+    async def test_whitelist_policy(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+    ) -> None:
+        ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.WHITELIST)
+        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""), domain_whitelist=["example.com"])
+        await tool(url="https://docs.example.com/")
+        with pytest.raises(PermissionDeniedError):
+            await tool(url="https://other.com/")
+
+    @pytest.mark.asyncio
+    async def test_fetch_error_wrapped(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+    ) -> None:
+        def boom(url: str, timeout_sec: int) -> tuple[str, str, int, str]:
+            raise ConnectionError("DNS")
+
+        ctx = _ctx(sandbox, store, router)
+        tool = make_fetch_url(ctx, fetcher=boom)
+        with pytest.raises(ExternalContentError):
+            await tool(url="https://crates.io/")
+        egress = [
+            e for e in ctx.event_log.iter_events() if e.kind == EventKind.EGRESS_REQUEST.value
+        ]
+        assert len(egress) == 1
+        assert "fetch-error" in (egress[0].payload["blocked_reason"] or "")
+
+
+# ---------------------------------------------------------------------------
+# Save tools
+# ---------------------------------------------------------------------------
+
+
+class TestSaveNotes:
+    @pytest.mark.asyncio
+    async def test_save_research_note(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        path = await make_save_research_note(ctx)(topic="axum-routing", content_markdown="# Axum")
+        assert path == "research_notes/axum-routing.md"
+        assert store.read_text(path).startswith("# Axum")
+
+    @pytest.mark.asyncio
+    async def test_save_research_note_rejects_bad_slug(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        with pytest.raises(ToolError):
+            await make_save_research_note(ctx)(topic="Axum Routing!", content_markdown="x")
+
+    @pytest.mark.asyncio
+    async def test_save_code_map(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        path = await make_save_code_map(ctx)(module="api-handlers", content_markdown="# API")
+        assert path == "code_map/api-handlers.md"
+
+    @pytest.mark.asyncio
+    async def test_save_dependency_brief(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        path = await make_save_dependency_brief(ctx)(content_markdown="# Deps")
+        assert path == "dependency_brief.md"
+
+    @pytest.mark.asyncio
+    async def test_save_workspace_overview(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        path = await make_save_workspace_overview(ctx)(content_markdown="# Layout")
+        assert path == "workspace_overview.md"
+
+
+# ---------------------------------------------------------------------------
+# cargo_metadata + cargo_tree
+# ---------------------------------------------------------------------------
+
+
+class TestCargoMetadata:
+    @pytest.mark.asyncio
+    async def test_parses_json(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        sample = json.dumps({"packages": [{"name": "foo"}], "workspace_root": "/x"})
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(
+                command=cmd, exit_code=0, stdout=sample, stderr="", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        data = await make_cargo_metadata(ctx)()
+        assert data["packages"][0]["name"] == "foo"
+
+    @pytest.mark.asyncio
+    async def test_non_zero_exit_raises(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(
+                command=cmd, exit_code=1, stdout="", stderr="no manifest", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        with pytest.raises(ToolError):
+            await make_cargo_metadata(ctx)()
+
+    @pytest.mark.asyncio
+    async def test_bad_json_raises(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(
+                command=cmd, exit_code=0, stdout="not json", stderr="", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        with pytest.raises(ToolError):
+            await make_cargo_metadata(ctx)()
+
+
+class TestCargoTree:
+    @pytest.mark.asyncio
+    async def test_returns_command_result(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(
+                command=cmd, exit_code=0, stdout="foo v0.1.0", stderr="", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        result = await make_cargo_tree(ctx)(args=["--edges", "normal"])
+        assert result.ok
+        assert "foo" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# grep + glob
+# ---------------------------------------------------------------------------
+
+
+class TestGrep:
+    @pytest.mark.asyncio
+    async def test_parses_matches(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        rg_out = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "match",
+                        "data": {
+                            "path": {"text": "src/lib.rs"},
+                            "lines": {"text": "pub fn hello() {}\n"},
+                            "line_number": 4,
+                        },
+                    }
+                ),
+                json.dumps({"type": "summary", "data": {}}),
+            ]
+        )
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(
+                command=cmd, exit_code=0, stdout=rg_out, stderr="", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        matches = await make_grep(ctx)(pattern="hello")
+        assert len(matches) == 1
+        assert matches[0].path == "src/lib.rs"
+        assert matches[0].line_number == 4
+
+    @pytest.mark.asyncio
+    async def test_no_matches_returns_empty(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(command=cmd, exit_code=1, stdout="", stderr="", duration_sec=0.01)
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        matches = await make_grep(ctx)(pattern="missing")
+        assert matches == []
+
+    @pytest.mark.asyncio
+    async def test_error_exit_raises(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return CommandResult(
+                command=cmd, exit_code=2, stdout="", stderr="ripgrep blew up", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        with pytest.raises(ToolError):
+            await make_grep(ctx)(pattern="x")
+
+
+class TestGlob:
+    @pytest.mark.asyncio
+    async def test_filters_git_ls_files(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from maf_coder.agents.results import CommandResult
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            ls = "Cargo.toml\nsrc/lib.rs\nsrc/main.rs\nREADME.md\n"
+            return CommandResult(command=cmd, exit_code=0, stdout=ls, stderr="", duration_sec=0.01)
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        result = await make_glob(ctx)(pattern="src/*.rs")
+        assert sorted(result) == ["src/lib.rs", "src/main.rs"]
+
+
+# ---------------------------------------------------------------------------
+# Builder smoke
+# ---------------------------------------------------------------------------
+
+
+class TestBuilder:
+    def test_build_returns_callable_list(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        tools = build_research_tools(ctx)
+        assert len(tools) == 9
+        for t in tools:
+            assert callable(t)
