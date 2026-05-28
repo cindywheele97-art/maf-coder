@@ -70,7 +70,7 @@ class OrchestratorAgent(BaseAgent[OrchestratorRunSummary]):
             tools_invoked=list(ctx.tools_invoked),
         )
 
-    def _null_output(self) -> OrchestratorRunSummary:  # type: ignore[override]
+    def _null_output(self) -> OrchestratorRunSummary:
         return OrchestratorRunSummary(final_message="", tools_invoked=[])
 
 

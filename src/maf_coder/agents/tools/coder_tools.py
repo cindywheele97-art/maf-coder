@@ -369,7 +369,7 @@ def make_save_patch(ctx: TaskContext) -> Any:
         )
         ctx.event_log.log_artifact_written(
             mission_id=ctx.mission_id,
-            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
+            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,
             path=relpath,
             task_id=task_id,
         )
@@ -426,7 +426,7 @@ def make_save_handoff(ctx: TaskContext) -> Any:
         )
         ctx.event_log.log_artifact_written(
             mission_id=ctx.mission_id,
-            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
+            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,
             path=str(path),
             task_id=task_id,
         )
@@ -449,7 +449,7 @@ def make_save_test_report(ctx: TaskContext) -> Any:
         record_tool_call(ctx, "save_test_report", f"task_id={task_id}")
         ctx.event_log.log_artifact_written(
             mission_id=ctx.mission_id,
-            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,  # type: ignore[union-attr]
+            actor=ctx.task.owner if isinstance(ctx.task.owner, str) else ctx.task.owner.value,
             path=relpath,
             task_id=task_id,
         )

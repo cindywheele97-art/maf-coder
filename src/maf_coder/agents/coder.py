@@ -96,7 +96,7 @@ class CoderWorkerAgent(BaseAgent[CoderRunSummary]):
             tools_invoked=list(ctx.tools_invoked),
         )
 
-    def _null_output(self) -> CoderRunSummary:  # type: ignore[override]
+    def _null_output(self) -> CoderRunSummary:
         return CoderRunSummary(final_message="", handoff_path="", tools_invoked=[])
 
 

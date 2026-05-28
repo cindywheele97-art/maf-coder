@@ -247,7 +247,7 @@ class ModelRouter:
         succeeds or all are exhausted (RuntimeError).
         """
         try:
-            from litellm import acompletion  # type: ignore[import-not-found]
+            from litellm import acompletion
         except ImportError as e:  # pragma: no cover
             raise RuntimeError("LiteLLM not installed. Run: pip install 'litellm>=1.50.0'") from e
 

@@ -81,7 +81,7 @@ class ReviewValidatorAgent(BaseAgent[ReviewRunSummary]):
             tools_invoked=list(ctx.tools_invoked),
         )
 
-    def _null_output(self) -> ReviewRunSummary:  # type: ignore[override]
+    def _null_output(self) -> ReviewRunSummary:
         return ReviewRunSummary(final_message="", verdict_path="", tools_invoked=[])
 
 

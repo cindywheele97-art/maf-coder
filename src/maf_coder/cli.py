@@ -131,7 +131,7 @@ def _generate_mission_id() -> str:
 
 if _TYPER_AVAILABLE:
 
-    @mission_app.command("new")  # type: ignore[union-attr]
+    @mission_app.command("new")
     def _mission_new(
         goal: str = typer.Argument(..., help="One-line mission goal."),
         repo: Path = typer.Option(..., "--repo", "-r", help="Path to the target Rust repo."),
@@ -154,14 +154,14 @@ if _TYPER_AVAILABLE:
         )
         typer.echo(json.dumps(result, indent=2))
 
-    @mission_app.command("status")  # type: ignore[union-attr]
+    @mission_app.command("status")
     def _mission_status(
         mission_id: str = typer.Argument(..., help="Mission id."),
     ) -> None:
         result = cmd_mission_status(mission_id)
         typer.echo(json.dumps(result, indent=2))
 
-    @mission_app.command("profile")  # type: ignore[union-attr]
+    @mission_app.command("profile")
     def _mission_profile(
         repo: Path = typer.Option(..., "--repo", "-r", help="Path to the target Rust repo."),
     ) -> None:
@@ -171,7 +171,7 @@ if _TYPER_AVAILABLE:
 
 def main() -> None:  # pragma: no cover - thin shell entry
     if _TYPER_AVAILABLE:
-        app()  # type: ignore[misc]
+        app()
         return
     print("typer is not installed; install with 'pip install typer'", file=sys.stderr)
     sys.exit(2)

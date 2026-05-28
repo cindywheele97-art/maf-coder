@@ -377,7 +377,7 @@ class DockerSandbox(SandboxClient):
     def is_available() -> bool:
         """True iff docker-py is importable and the daemon is reachable."""
         try:
-            import docker  # type: ignore[import-not-found]
+            import docker
         except ImportError:
             return False
         try:
@@ -396,7 +396,7 @@ class DockerSandbox(SandboxClient):
         volumes: dict[str, str] | None = None,
     ) -> None:
         try:
-            import docker  # type: ignore[import-not-found]
+            import docker
         except ImportError as e:
             raise SandboxError("docker-py not installed. Install with `pip install docker`.") from e
 
