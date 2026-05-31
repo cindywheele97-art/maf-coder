@@ -134,6 +134,46 @@ roles:
       - Review PASS 之后才触发，与 Review 严格串行
 
 # ============================================================================
+# Smart Router — 复杂度/成本感知的 tier 路由（PilotDeck tokenSaver 融合）
+# ----------------------------------------------------------------------------
+# 在角色级路由之上叠加「这个人用多大力气做」：cheap Judge 模型把 Task 分到
+# simple/medium/reasoning/complex 四档，SR-2 再套 RoleRouter 的异-provider /
+# forbidden_providers 约束应用 tier model。
+#   - complex ⇒ Orchestrator 拆 DAG 任务，**不是** turn 内 spawn sub-agent。
+#   - 设计来源：docs/PILOTDECK_SMART_ROUTER_FUSION.md §4.2。
+# 注意：本 PR (SR-1) 只产出 RouteDecision，不应用 tier；SR-2 接 resolve_model。
+# ============================================================================
+smart_router:
+  enabled: true
+  judge:
+    # 与 adversarial_subagent 同级的 cheap 模型，temperature=0，短输出。
+    model: google/gemini-2.5-flash
+    temperature: 0.0
+    max_tokens: 256
+    timeout_ms: 15000
+  default_tier: medium          # 解析失败且无 previous_tier 时回退
+  tiers:
+    simple:    { model: anthropic/claude-sonnet-4-6, temperature: 0.2, max_tokens: 8000 }
+    medium:    { model: anthropic/claude-sonnet-4-6, temperature: 0.2, max_tokens: 32000 }
+    reasoning: { model: anthropic/claude-opus-4-7,   temperature: 0.2, max_tokens: 32000 }
+    # complex 不配 model：它是 Orchestrator 重规划信号，不直接选模型。
+  rules:
+    - "Security audit with zero findings → simple"
+    - "Cross-crate refactor or new public API → reasoning"
+    - "Validator roles: never tier below medium"
+  per_role:
+    coder_worker:     { enabled: true }
+    research_worker:  { enabled: true }
+    behavior_validator: { enabled: true }
+    review_validator: { enabled: false }   # 异-provider 硬约束，不交给 Judge
+    adversarial_subagent: { enabled: false }  # 永远 cheap
+  sticky:
+    enabled: true
+    inherit_on: ["continue", "ok", "好的", "继续"]
+  stats:
+    baseline_model: anthropic/claude-opus-4-7
+
+# ============================================================================
 # Mission 级预算守门
 # ============================================================================
 budgets:

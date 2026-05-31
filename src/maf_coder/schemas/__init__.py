@@ -51,6 +51,7 @@ from .profile import (
     TestStrategy,
     Toolchain,
 )
+from .routing import RouteDecision, TierModelOverride, TierName
 from .task import FailureHandling, Permission, Task, TaskBudget
 from .verdict import (
     AssertionResult,
@@ -100,6 +101,10 @@ __all__ = [
     "TestStrategy",
     "BehaviorProbeSpec",
     "CIExisting",
+    # Routing (Smart Router)
+    "RouteDecision",
+    "TierModelOverride",
+    "TierName",
     # Verdict
     "ReviewVerdict",
     "BehaviorVerdict",
