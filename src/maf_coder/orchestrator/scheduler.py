@@ -26,10 +26,10 @@ from typing import Any, Literal
 from ..agents.base import AgentResult, BaseAgent
 from ..agents.results import TaskHandle
 from ..blackboard import ArtifactStore
-from ..blackboard.event_log import EventLog
+from ..blackboard.event_log import Event, EventKind, EventLog
 from ..models import ModelRouter
 from ..sandbox import SandboxClient
-from ..schemas import Role, Task
+from ..schemas import Role, Task, VerdictResult
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,18 @@ class Scheduler:
 
     def has_task(self, task_id: str) -> bool:
         return task_id in self._tasks
+
+    def task_owner(self, task_id: str) -> str | None:
+        """Return the owner role value of a known task, or None if unknown.
+
+        Used by the dual-validator chain gate to resolve the review_validator
+        dependency of a behavior_validator task without hardcoding task IDs.
+        """
+        rec = self._tasks.get(task_id)
+        if rec is None:
+            return None
+        owner = rec.task.owner
+        return owner.value if hasattr(owner, "value") else str(owner)
 
     async def add_task(self, task: Task) -> TaskHandle:
         if task.task_id in self._tasks:
@@ -135,6 +147,58 @@ class Scheduler:
             return role
         return Role(role)
 
+    # -- Dual-validator chain (Phase D §D3) --------------------------------
+
+    def _review_dependency_id(self, rec: _TaskRecord) -> str | None:
+        """Resolve the review_validator dependency of a behavior task by role.
+
+        Generic — never matches literal IDs. Returns the first dependency owned
+        by review_validator, or None if the behavior task has no such dependency.
+        """
+        for dep_id in rec.task.depends_on:
+            dep = self._tasks.get(dep_id)
+            if dep is None:
+                continue
+            if self._coerce_role(dep.task.owner) is Role.REVIEW_VALIDATOR:
+                return dep_id
+        return None
+
+    def _behavior_chain_ok(self, rec: _TaskRecord) -> bool:
+        """True iff this behavior task may run: it has a review_validator
+        dependency whose verdict file exists and is PASS.
+        """
+        review_id = self._review_dependency_id(rec)
+        if review_id is None:
+            return False
+        try:
+            verdict = self.store.load_review_verdict(review_id)
+        except FileNotFoundError:
+            return False
+        return verdict.result == VerdictResult.PASS.value
+
+    def _block_behavior_task(self, rec: _TaskRecord) -> None:
+        """Refuse a behavior task whose review gate is unsatisfied: mark blocked,
+        emit an event carrying the implementation_path_issue signal, finish it.
+        """
+        review_id = self._review_dependency_id(rec)
+        rec.state = "blocked"
+        rec.error = "blocked: dual-validator chain — review verdict not PASS"
+        self.event_log.append(
+            Event(
+                kind=EventKind.VALIDATOR_CHAIN_BLOCKED.value,
+                mission_id=self.mission_id,
+                trace_id=self.mission_id,
+                task_id=rec.task.task_id,
+                actor=Role.BEHAVIOR_VALIDATOR.value,
+                payload={
+                    "reason": rec.error,
+                    "review_task_id": review_id,
+                    "signal": "implementation_path_issue",
+                },
+            )
+        )
+        rec.done_event.set()
+
     # -- Wait helpers ------------------------------------------------------
 
     async def wait_for(self, task_id: str, timeout_sec: float | None = None) -> AgentResult[Any]:
@@ -170,13 +234,25 @@ class Scheduler:
             launched_any = False
             async with self._lock:
                 for rec in self._tasks.values():
-                    if self._is_ready(rec):
-                        rec.state = "active"
-                        owner = self._coerce_role(rec.task.owner)
-                        self._active_by_role[owner] += 1
-                        t = asyncio.create_task(self._run_one(rec))
-                        active_tasks.add(t)
-                        launched_any = True
+                    if not self._is_ready(rec):
+                        continue
+                    # Dual-validator chain — runtime verdict gate (Phase D §D3,
+                    # condition (b)). A behavior_validator task may only run once
+                    # its review_validator dependency has a PASS verdict on disk.
+                    # Deps are already complete here (guaranteed by _is_ready), so
+                    # the review verdict file exists if review actually passed.
+                    if (
+                        self._coerce_role(rec.task.owner) is Role.BEHAVIOR_VALIDATOR
+                        and not self._behavior_chain_ok(rec)
+                    ):
+                        self._block_behavior_task(rec)
+                        continue
+                    rec.state = "active"
+                    owner = self._coerce_role(rec.task.owner)
+                    self._active_by_role[owner] += 1
+                    t = asyncio.create_task(self._run_one(rec))
+                    active_tasks.add(t)
+                    launched_any = True
 
             if not launched_any and not active_tasks:
                 # Nothing scheduled and nothing in flight. Are we done?
