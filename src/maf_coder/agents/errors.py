@@ -73,6 +73,17 @@ class AssertionUnknownError(ToolError):
     """
 
 
+class ValidatorChainError(ToolError):
+    """Dual-validator chain violation (Phase D §D3).
+
+    Raised when a `behavior_validator` task is dispatched without a
+    `review_validator` task among its `depends_on`. The behavior validator may
+    only run downstream of a PASSing review verdict (soul.md §3.6); a behavior
+    task with no review dependency can never satisfy that precondition, so it is
+    refused at dispatch time.
+    """
+
+
 __all__ = [
     "ArtifactError",
     "AssertionUnknownError",
@@ -82,4 +93,5 @@ __all__ = [
     "SandboxError",
     "TaskAlreadyDispatchedError",
     "ToolError",
+    "ValidatorChainError",
 ]

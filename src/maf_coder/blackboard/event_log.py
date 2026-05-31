@@ -74,6 +74,7 @@ class EventKind(str, Enum):
     VALIDATOR_VERDICT = "validator_verdict"
     SECOND_PASS_TRIGGERED = "second_pass_triggered"  # v3.1 — handoff completeness rule fired
     SECURITY_FINDING = "security_finding"
+    VALIDATOR_CHAIN_BLOCKED = "validator_chain_blocked"  # Phase D §D3 — dual-validator gate refused
 
     # External / network (Phase C — soul.md §7)
     EXTERNAL_CONTENT_RECEIVED = "external_content_received"

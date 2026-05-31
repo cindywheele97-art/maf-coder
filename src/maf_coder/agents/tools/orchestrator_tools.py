@@ -32,6 +32,7 @@ from ..errors import (
     AssertionUnknownError,
     PermissionDeniedError,
     TaskAlreadyDispatchedError,
+    ValidatorChainError,
 )
 from ..permissions import check_tool_allowed
 from ..results import TaskHandle
@@ -65,6 +66,35 @@ class _SchedulerLike(Protocol):
 
     async def add_task(self, task: Task) -> TaskHandle: ...
     def has_task(self, task_id: str) -> bool: ...
+
+
+def _scheduler_task_owner(scheduler: _SchedulerLike | None, task_id: str) -> str | None:
+    """Resolve a dependency's owner role via the scheduler, if it exposes it.
+
+    The real Scheduler implements ``task_owner``; lighter stubs may not. We probe
+    defensively so the dual-validator gate degrades gracefully (it only fires
+    when owner resolution is available) rather than breaking callers that pass a
+    minimal scheduler.
+    """
+    owner_fn = getattr(scheduler, "task_owner", None)
+    if owner_fn is None:
+        return None
+    result = owner_fn(task_id)
+    return result if isinstance(result, str) else None
+
+
+def _find_review_dependency(
+    scheduler: _SchedulerLike | None, depends_on: list[str]
+) -> str | None:
+    """Return the first dependency owned by review_validator, or None.
+
+    Generic resolution: scans the behavior task's declared dependencies and
+    matches on owner role, so the chain gate never hardcodes specific task IDs.
+    """
+    for dep_id in depends_on:
+        if _scheduler_task_owner(scheduler, dep_id) == Role.REVIEW_VALIDATOR.value:
+            return dep_id
+    return None
 
 
 def _require_orchestrator(ctx: TaskContext, tool: str) -> None:
@@ -134,6 +164,20 @@ def make_dispatch_task(ctx: TaskContext, *, scheduler: _SchedulerLike | None = N
             owner_enum = Role(owner)
         except ValueError as e:
             raise ArtifactError(f"dispatch_task: invalid owner: {e}") from e
+
+        # Dual-validator chain — structural gate (Phase D §D3, condition (a)):
+        # a behavior_validator task MUST depend on at least one review_validator
+        # task. The verdict-PASS check (condition (b)) happens later, when the
+        # task is actually about to run (Scheduler._is_ready), because the review
+        # verdict file does not exist yet at DAG-construction time. We resolve the
+        # review dependency generically by owner role — never by literal ID.
+        if owner_enum is Role.BEHAVIOR_VALIDATOR and scheduler is not None:
+            review_dep = _find_review_dependency(scheduler, depends_on or [])
+            if review_dep is None:
+                raise ValidatorChainError(
+                    f"dispatch_task: behavior_validator task {task_id!r} must depend on a "
+                    f"review_validator task (depends_on={depends_on or []}); refusing dispatch"
+                )
 
         task = Task(
             task_id=task_id,

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.base import BaseAgent
+from ..agents.behavior import BehaviorValidatorAgent
 from ..agents.coder import CoderWorkerAgent
 from ..agents.orchestrator import OrchestratorAgent
 from ..agents.research import ResearchWorkerAgent
@@ -163,6 +164,7 @@ class MissionDriver:
         reviewer = ReviewValidatorAgent(**common)
         researcher = ResearchWorkerAgent(**common)
         security = SecurityWorkerAgent(**common)
+        behavior = BehaviorValidatorAgent(**common)
 
         agent_factory: dict[Role, Callable[[], BaseAgent[Any]]] = {
             Role.ORCHESTRATOR: lambda: orch,
@@ -170,6 +172,7 @@ class MissionDriver:
             Role.REVIEW_VALIDATOR: lambda: reviewer,
             Role.RESEARCH_WORKER: lambda: researcher,
             Role.SECURITY_WORKER: lambda: security,
+            Role.BEHAVIOR_VALIDATOR: lambda: behavior,
         }
         scheduler = Scheduler(
             store=self.store,
