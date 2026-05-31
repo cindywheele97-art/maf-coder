@@ -14,6 +14,7 @@ Public surface (Phase B):
 from __future__ import annotations
 
 from .base import AgentResult, BaseAgent, TaskContext
+from .behavior import BehaviorRunSummary, BehaviorValidatorAgent
 from .coder import CoderRunSummary, CoderWorkerAgent
 from .errors import (
     ArtifactError,
@@ -62,6 +63,8 @@ __all__ = [
     "CoderRunSummary",
     "ReviewValidatorAgent",
     "ReviewRunSummary",
+    "BehaviorValidatorAgent",
+    "BehaviorRunSummary",
     "OrchestratorAgent",
     "OrchestratorRunSummary",
 ]

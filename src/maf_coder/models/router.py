@@ -117,7 +117,9 @@ def _provider_of(model_id: str) -> str:
 # Roles that MUST run on a different provider than Coder. This is the dynamic
 # half of the异-provider rule from soul.md §3.5 — the static half lives in
 # `forbidden_providers` inside droid_whispering.yaml.
-_VALIDATOR_ROLES = frozenset({"review_validator", "adversarial_subagent"})
+_VALIDATOR_ROLES = frozenset(
+    {"review_validator", "behavior_validator", "adversarial_subagent"}
+)
 
 
 # ---------------------------------------------------------------------------
