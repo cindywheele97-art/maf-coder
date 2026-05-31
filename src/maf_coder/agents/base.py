@@ -223,12 +223,27 @@ class BaseAgent(ABC, Generic[T]):
             coder_provider_in_use=coder_provider_in_use,
         )
 
-        # Resolve model for this role + dynamic provider constraint
+        # Resolve model for this role + dynamic provider constraint.
+        # Smart Router hook (SR-2): when smart_router is enabled for this role,
+        # resolve_model classifies the task into a tier and applies the tier's
+        # model over the primary — STILL passing forbidden_providers / validator
+        # -≠-coder enforcement. When disabled (the default, and always for
+        # review_validator) resolve_model returns get_primary_model unchanged, so
+        # routing is identical. coder_provider_in_use flows from the Scheduler;
+        # when None, forbidden_providers from config still applies.
+        role_name = self.role.value if hasattr(self.role, "value") else self.role
         try:
-            model_cfg = self.router.get_primary_model(
-                self.role.value if hasattr(self.role, "value") else self.role,
-                coder_provider_in_use=coder_provider_in_use,
-            )
+            if hasattr(self.router, "resolve_model"):
+                model_cfg = await self.router.resolve_model(
+                    role_name,
+                    task=task,
+                    coder_provider_in_use=coder_provider_in_use,
+                )
+            else:
+                model_cfg = self.router.get_primary_model(
+                    role_name,
+                    coder_provider_in_use=coder_provider_in_use,
+                )
         except Exception as e:
             logger.error("Model resolution failed for role=%s: %r", self.role, e)
             return AgentResult(
