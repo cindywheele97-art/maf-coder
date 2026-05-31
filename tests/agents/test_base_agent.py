@@ -283,6 +283,61 @@ class TestRun:
         assert "openai" in result.model_used
 
     @pytest.mark.asyncio
+    async def test_smart_router_hook_applies_tier_when_enabled(
+        self,
+        store: ArtifactStore,
+        event_log: EventLog,
+        prompt_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        """The single base.py hook must route the run through resolve_model: when
+        smart_router is enabled for coder_worker and the (mocked) judge picks
+        `reasoning`, the SDK call must receive the tier model, not the primary.
+        """
+        cfg_path = tmp_path / "sr_droid.yaml"
+        cfg_path.write_text(
+            "version: 1\n"
+            "roles:\n"
+            "  coder_worker:\n"
+            "    primary: { model: anthropic/claude-primary, temperature: 0.1, max_tokens: 4000 }\n"
+            "    fallback: []\n"
+            "smart_router:\n"
+            "  enabled: true\n"
+            "  judge: { model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 256 }\n"
+            "  default_tier: medium\n"
+            "  tiers:\n"
+            "    reasoning: { model: anthropic/claude-tier-reasoning, max_tokens: 32000 }\n"
+            "  per_role:\n"
+            "    coder_worker: { enabled: true }\n"
+        )
+        router = ModelRouter(cfg_path)
+
+        async def _judge(_prompt: str) -> str:
+            return "<tier>reasoning</tier>"
+
+        # Inject the stub judge so no live API is hit.
+        router.config.smart_router.judge = None  # force resolve_model to use override judge
+        original = router.resolve_model
+
+        async def _resolve(role, **kw):  # type: ignore[no-untyped-def]
+            return await original(role, judge=_judge, **kw)
+
+        router.resolve_model = _resolve  # type: ignore[method-assign]
+
+        agent = _StubAgent(
+            prompt_path=prompt_file,
+            raw_output="done",
+            store=store,
+            event_log=event_log,
+            router=router,
+            sandbox=_DummySandbox(),
+        )
+        result = await agent.run(_make_task(), mission_id="m-test-001")
+        assert result.errored is False
+        # The hook routed through resolve_model → SDK saw the tier model.
+        assert result.model_used == "anthropic/claude-tier-reasoning"
+
+    @pytest.mark.asyncio
     async def test_unhandled_exception_in_sdk_yields_errored(
         self,
         store: ArtifactStore,

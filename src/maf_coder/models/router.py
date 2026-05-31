@@ -26,6 +26,9 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..schemas.routing import TierModelOverride
+from .tier_router import JudgeFn
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +58,33 @@ class RoleConfig(BaseModel):
     notes: str = ""
 
 
+class SmartRouterRoleFlag(BaseModel):
+    """Per-role smart_router enable flag (smart_router.per_role.<role>)."""
+
+    model_config = ConfigDict(extra="allow")  # tolerate future per-role keys
+
+    enabled: bool = False
+
+
+class SmartRouterConfig(BaseModel):
+    """The ``smart_router:`` block from droid_whispering.yaml (SR-1/SR-2).
+
+    Only the fields SR-2's ``resolve_model`` consumes are typed; the rest of the
+    block (sticky, stats, …) is tolerated via ``extra="allow"`` so SR-1's shape
+    is preserved without coupling SR-2 to every sub-key.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    judge: ModelConfig | None = None
+    default_tier: str = "medium"
+    # tier_name -> model override (mirrors ModelConfig). `complex` carries none.
+    tiers: dict[str, ModelConfig] = Field(default_factory=dict)
+    rules: list[str] = Field(default_factory=list)
+    per_role: dict[str, SmartRouterRoleFlag] = Field(default_factory=dict)
+
+
 class RouterConfig(BaseModel):
     """Top-level droid_whispering.yaml structure."""
 
@@ -62,6 +92,7 @@ class RouterConfig(BaseModel):
 
     version: int = 1
     roles: dict[str, RoleConfig]
+    smart_router: SmartRouterConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +261,147 @@ class ModelRouter:
             if fb.model != primary.model:
                 chain.append(fb)
         return chain
+
+    # -- Smart Router: tier-aware resolution (SR-2) ------------------------
+
+    def _smart_router_enabled_for(self, role: str) -> bool:
+        """True iff smart_router is enabled globally AND for this role.
+
+        Default OFF for any role without an explicit ``per_role.<role>.enabled:
+        true`` — this keeps validators (and every un-flagged role) deterministic,
+        matching the disabled-path behaviour of ``get_primary_model``.
+        """
+        sr = self.config.smart_router
+        if sr is None or not sr.enabled:
+            return False
+        flag = sr.per_role.get(role)
+        return flag is not None and flag.enabled
+
+    def _judge_from_config(self) -> JudgeFn | None:
+        """Build the default Judge callable wrapping ``complete()`` on the cheap
+        judge model from ``smart_router.judge``. Returns ``None`` if unconfigured.
+
+        The judge is its own LiteLLM call; classification failures inside
+        ``classify_task`` are caught there and fall back to sticky/default, so a
+        judge error never breaks model resolution.
+        """
+        sr = self.config.smart_router
+        if sr is None or sr.judge is None:
+            return None
+        judge_model = sr.judge
+
+        async def _judge(prompt: str) -> str:
+            from litellm import acompletion
+
+            resp = await acompletion(
+                model=judge_model.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=judge_model.temperature,
+                max_tokens=judge_model.max_tokens,
+            )
+            return resp.choices[0].message.content or ""
+
+        return _judge
+
+    async def resolve_model(
+        self,
+        role: str,
+        *,
+        task: object,
+        coder_provider_in_use: str | None = None,
+        judge: JudgeFn | None = None,
+        profile: object | None = None,
+        previous_tier: str | None = None,
+    ) -> ModelConfig:
+        """Resolve the model for a role, optionally applying a complexity tier.
+
+        Disabled path (smart_router off globally or for this role) → identical to
+        ``get_primary_model(role, coder_provider_in_use=...)``. This is the
+        invariant that keeps existing routing unchanged.
+
+        Enabled path:
+          1. Classify ``task`` into a tier via ``tier_router.classify_task``
+             (judge injected from config unless overridden — kept off the live
+             API in tests by passing a stub ``judge``).
+          2. If the tier carries a model override, apply it OVER the primary —
+             but FIRST run that override through the same forbidden-providers /
+             validator-≠-coder enforcement as ``get_primary_model``. If the
+             override's provider is forbidden, DISCARD it and fall back to the
+             compliant primary/fallback. A tier can NEVER route a validator onto
+             the Coder's provider (execution plan §1.5).
+          3. ``complex`` carries no override (Orchestrator re-planning signal) →
+             primary is returned unchanged; never an error.
+        """
+        # Compliant baseline — also the disabled-path return value.
+        compliant_primary = self.get_primary_model(
+            role, coder_provider_in_use=coder_provider_in_use
+        )
+        if not self._smart_router_enabled_for(role):
+            return compliant_primary
+
+        from .tier_router import classify_task
+
+        sr = self.config.smart_router
+        assert sr is not None  # guaranteed by _smart_router_enabled_for
+        judge_fn = judge if judge is not None else self._judge_from_config()
+        if judge_fn is None:
+            # No judge available → cannot classify; behave as disabled.
+            return compliant_primary
+
+        from ..schemas.routing import TierName
+
+        default_tier = TierName.MEDIUM
+        try:
+            default_tier = TierName(sr.default_tier)
+        except ValueError:
+            logger.warning(
+                "smart_router.default_tier %r invalid; using 'medium'.", sr.default_tier
+            )
+
+        tier_models = {
+            name: TierModelOverride(
+                model=cfg.model, temperature=cfg.temperature, max_tokens=cfg.max_tokens
+            )
+            for name, cfg in sr.tiers.items()
+        }
+
+        decision = await classify_task(
+            task=task,
+            profile=profile,
+            rules=sr.rules,
+            judge=judge_fn,
+            previous_tier=previous_tier,
+            default_tier=default_tier,
+            tier_models=tier_models,
+        )
+
+        override = decision.model_override
+        if override is None:
+            # `complex` (or any tier without a configured model) → primary as-is.
+            return compliant_primary
+
+        # CRITICAL §1.5: the tier override is subject to the SAME constraints as
+        # any role model. Reject it if its provider is forbidden for this role.
+        forbidden = self._forbidden_providers_for(
+            role, coder_provider_in_use=coder_provider_in_use
+        )
+        if _provider_of(override.model) in forbidden:
+            logger.warning(
+                "Tier %s override %s forbidden for role %s (blocked: %s); "
+                "discarding override, using compliant primary %s.",
+                decision.tier,
+                override.model,
+                role,
+                sorted(forbidden),
+                compliant_primary.model,
+            )
+            return compliant_primary
+
+        return ModelConfig(
+            model=override.model,
+            temperature=override.temperature,
+            max_tokens=override.max_tokens,
+        )
 
     # -- Async completion --------------------------------------------------
 

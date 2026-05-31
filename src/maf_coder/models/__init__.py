@@ -8,6 +8,8 @@ from .router import (
     RoleConfig,
     RoleNotConfiguredError,
     RouterConfig,
+    SmartRouterConfig,
+    SmartRouterRoleFlag,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "RoleConfig",
     "RoleNotConfiguredError",
     "RouterConfig",
+    "SmartRouterConfig",
+    "SmartRouterRoleFlag",
 ]
