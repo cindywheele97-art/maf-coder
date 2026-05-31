@@ -4,7 +4,7 @@ This file is loaded by Claude Code at the start of every session for this projec
 
 ## What this project is
 
-**MAF-Coder** is a multi-agent framework for autonomous Rust coding missions. It is currently in Phase A→B transition. See `MAF-Coder_v2_Build_Plan.md` for the roadmap and `agent_team_soul_v3.1.md` for the framework's organizational constitution.
+**MAF-Coder** is a multi-agent framework for autonomous Rust coding missions. Phases A, B, and C are complete; Phase D is in progress. See `MAF-Coder_v2_Build_Plan.md` for the roadmap and `agent_team_soul_v3.1.md` for the framework's organizational constitution.
 
 **Meta-context that's easy to confuse**: this is a Python project that *builds* agents which *operate on Rust codebases*. When you're working in this repo, you're writing **Python** (orchestrator, workers, validators, schemas). The Rust-specific knowledge in `prompts/coder_worker.md` and `prompts/review_validator.md` is content that future agents will read — not your working environment.
 
@@ -41,7 +41,7 @@ python scripts/smoke_test.py --dry-run  # plan check, no API calls
 
 `pytest` should always pass on `main`. If you commit while red, you've broken the bar.
 
-## Current phase: A complete + Tier 1 design done, Phase B implementation in progress
+## Current phase: A, B, and C complete; Phase D (BehaviorValidator + dual-validator chain) in progress
 
 Phase A delivered:
 - All Pydantic schemas (`src/maf_coder/schemas/`)
@@ -56,20 +56,18 @@ Tier 1 design package delivered (~3900 lines across three docs):
 - `AGENT_TOOLS_SPEC.md` (1641 lines)
 - `WORKED_EXAMPLE.md` (1433 lines)
 
-Phase B is in progress. The Orchestrator package and `planner.py` skeleton already exist (`src/maf_coder/orchestrator/__init__.py`, `src/maf_coder/orchestrator/planner.py`) with a working OpenAI Agents SDK integration that produces `plan.md` from a goal + ProjectProfile. 88 unit tests pass; 1 live test gated by `RUN_LIVE_TESTS=1`.
+Phase B delivered the BaseAgent foundation, permission layer, SandboxClient, Coder Worker, ReviewValidator + adversarial sub-agent, Project Profiler, the sequential Scheduler, MissionDriver, and the `maf-coder mission` CLI entry point.
 
-What's NOT yet built (the rest of Phase B per `AGENT_TOOLS_SPEC.md §17`):
-- `BaseAgent` class + `TaskContext` + tool factory pattern
-- Permission enforcement layer
-- `SandboxClient` (Docker integration)
-- Coder Worker (full implementation with all tools)
-- ReviewValidator + adversarial sub-agent
-- Project Profiler (currently uses hand-mocked profiles)
-- Scheduler with DAG execution
-- MissionDriver
-- CLI entry point (`maf-coder mission` command)
+Phase C delivered the Research Worker, Security Worker, the content sanitizer, egress logging, and the parallel worker matrix.
 
-The Build Plan §Phase B exit criteria are the source of truth for what "Phase B done" means.
+Phase D is now in progress: the BehaviorValidator and the dual-validator chain (ReviewValidator → BehaviorValidator). 294 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
+
+What's NOT yet built (Phase D per `AGENT_TOOLS_SPEC.md §17`):
+- `BehaviorValidator` implementation (its schemas/scaffolding exist, but no implementation yet)
+- The 5 probe strategies
+- Validator deadlock handling
+
+The Build Plan §Phase D exit criteria are the source of truth for what "Phase D done" means.
 
 ## Phase B implementation reading order
 
