@@ -83,6 +83,34 @@ def test_app_is_typer() -> None:
         assert cli.app is not None
         cmds = {c.name for c in cli.mission_app.registered_commands}
         assert {"new", "status", "profile"}.issubset(cmds)
+        top = {c.name for c in cli.app.registered_commands}
+        assert "metrics" in top
+
+
+def test_cmd_metrics_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cmd_metrics computes the baseline over the missions root; markdown and
+    json forms both work."""
+    from datetime import UTC, datetime
+
+    from maf_coder.blackboard import ArtifactStore
+    from maf_coder.schemas import MissionState
+
+    root = tmp_path / "missions"
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(root))
+    store = ArtifactStore(root, "m-cli")
+    store.save_mission_state(MissionState(mission_id="m-cli", started_at=datetime.now(UTC)))
+    store.event_log().log_mission_end(
+        mission_id="m-cli", result="complete", total_cost_usd=0.0, total_wall_clock_hours=1.0
+    )
+
+    js = cli.cmd_metrics()
+    assert isinstance(js, dict)
+    assert js["mission_count"] == 1
+    assert js["final_pass_rate"] == 1.0
+
+    md = cli.cmd_metrics(markdown=True)
+    assert isinstance(md, str)
+    assert "Health Metric Baseline" in md
 
 
 # ---------------------------------------------------------------------------

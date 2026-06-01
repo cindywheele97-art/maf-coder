@@ -321,6 +321,22 @@ def cmd_mission_profile(repo: Path) -> dict[str, Any]:
     return profile.model_dump(mode="json")
 
 
+def cmd_metrics(
+    *, missions_root: Path | None = None, markdown: bool = False
+) -> dict[str, Any] | str:
+    """Compute the G3 health-metric baseline across all missions under the root.
+
+    Returns the rendered markdown when ``markdown`` is set, else the report dict.
+    """
+    from .metrics import compute_baseline, render_baseline_markdown
+
+    root = missions_root or _missions_root()
+    report = compute_baseline(root)
+    if markdown:
+        return render_baseline_markdown(report)
+    return report.model_dump(mode="json")
+
+
 def _generate_mission_id() -> str:
     ts = datetime.now(UTC).strftime("%Y-%m-%d-%H%M%S")
     return f"m-{ts}"
@@ -457,6 +473,19 @@ if _TYPER_AVAILABLE:
         typer.echo(json.dumps(result, indent=2))
 
 
+    @app.command("metrics")
+    def _metrics(
+        missions_root: Path | None = typer.Option(
+            None, "--missions-root", help="Missions root (defaults to $MAF_MISSIONS_ROOT or ./missions)."
+        ),
+        markdown: bool = typer.Option(
+            False, "--markdown/--json", help="Render the baseline as markdown instead of JSON."
+        ),
+    ) -> None:
+        result = cmd_metrics(missions_root=missions_root, markdown=markdown)
+        typer.echo(result if isinstance(result, str) else json.dumps(result, indent=2))
+
+
 def main() -> None:  # pragma: no cover - thin shell entry
     if _TYPER_AVAILABLE:
         app()
@@ -469,6 +498,7 @@ __all__ = [
     "app",
     "cmd_mission_new",
     "cmd_mission_profile",
+    "cmd_metrics",
     "cmd_mission_routing_stats",
     "cmd_mission_status",
     "cmd_pr",
