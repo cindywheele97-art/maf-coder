@@ -41,6 +41,9 @@ from .lifecycle import (
     StatusReport,
 )
 from .message import Budgets, Message, RiskFlag
+
+# --- F-pr: PR workflow schemas (Build Plan §Phase F · F5) -------------------
+from .pr import PullRequestResult, PullRequestSpec, VcsProvider
 from .profile import (
     BehaviorProbeSpec,
     BuildSystem,
@@ -115,6 +118,10 @@ __all__ = [
     "SecurityFinding",
     # External / network
     "EgressRecord",
+    # PR workflow (F-pr)
+    "PullRequestSpec",
+    "PullRequestResult",
+    "VcsProvider",
     # Lifecycle
     "StatusReport",
     "Checkpoint",

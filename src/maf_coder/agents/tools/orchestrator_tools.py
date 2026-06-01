@@ -556,6 +556,90 @@ def make_get_budget_status(ctx: TaskContext) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# create_pr  (F-pr: PR workflow — Build Plan §Phase F · F5)
+# ---------------------------------------------------------------------------
+# Mission-end action: run the gitleaks pre-PR secret gate, then the gh/glab
+# wrapper. Refuses (does not call the CLI) if secrets are found. All process
+# exec routes through ctx.sandbox.exec inside integrations.vcs. Kept grouped
+# here (between the orchestrator factories and build_orchestrator_tools) so the
+# concurrent F-memory addition stays merge-clean.
+
+
+def make_create_pr(ctx: TaskContext) -> Any:
+    @function_tool
+    async def create_pr(
+        repo_path: str,
+        head_branch: str,
+        base_branch: str = "main",
+        provider: str = "gh",
+        draft: bool = False,
+        title: str | None = None,
+        goal: str | None = None,
+    ) -> dict[str, Any]:
+        """Open a PR/MR from the finished mission. Orchestrator-only.
+
+        Runs a final gitleaks secret scan first — if secrets are found the PR is
+        REFUSED and the findings are surfaced (no CLI invoked). Otherwise a PR
+        description is generated from the mission artifacts, the artifact
+        directory is linked, and `gh pr create` / `glab mr create` runs in the
+        sandbox. Returns the create result (url on success, refusal otherwise).
+        """
+        _require_orchestrator(ctx, "create_pr")
+        check_tool_allowed(ctx.task.permission, "create_pr")
+
+        # Lazy import keeps the integrations layer out of the agents import graph
+        # until a PR is actually opened.
+        from ...integrations.vcs import (
+            build_artifact_links,
+            create_pull_request,
+            render_pr_body,
+        )
+        from ...schemas.pr import PullRequestSpec, VcsProvider
+
+        try:
+            provider_enum = VcsProvider(provider)
+        except ValueError as e:
+            raise ArtifactError(f"create_pr: invalid provider: {e}") from e
+
+        artifact_links = build_artifact_links(ctx.store)
+        body = render_pr_body(
+            mission_id=ctx.mission_id,
+            store=ctx.store,
+            event_log=ctx.event_log,
+            goal=goal,
+            artifact_links=artifact_links,
+        )
+        pr_title = title or f"MAF-Coder: {ctx.mission_id}"
+        spec = PullRequestSpec(
+            mission_id=ctx.mission_id,
+            title=pr_title,
+            body=body,
+            head_branch=head_branch,
+            base_branch=base_branch,
+            provider=provider_enum,
+            draft=draft,
+            repo_path=repo_path,
+            artifact_links=artifact_links,
+        )
+        result = await create_pull_request(ctx, spec)
+        record_tool_call(
+            ctx,
+            "create_pr",
+            f"provider={provider} created={result.created} refused={result.refused}",
+        )
+        if result.refused:
+            ctx.event_log.log_escalation(
+                mission_id=ctx.mission_id,
+                target="human_gate",
+                reason=result.refusal_reason or "gitleaks gate refused PR",
+                task_id=ctx.task.task_id,
+            )
+        return result.model_dump(mode="json")
+
+    return create_pr
+
+
+# ---------------------------------------------------------------------------
 # Factory entry
 # ---------------------------------------------------------------------------
 
@@ -575,12 +659,15 @@ def build_orchestrator_tools(
         make_get_mission_state(ctx),
         make_update_mission_state(ctx),
         make_get_budget_status(ctx),
+        # F-pr: PR workflow
+        make_create_pr(ctx),
     ]
 
 
 __all__ = [
     "build_orchestrator_tools",
     "make_create_checkpoint",
+    "make_create_pr",  # F-pr
     "make_dispatch_task",
     "make_emit_event",
     "make_escalate_to_human_gate",

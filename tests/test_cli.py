@@ -83,3 +83,55 @@ def test_app_is_typer() -> None:
         assert cli.app is not None
         cmds = {c.name for c in cli.mission_app.registered_commands}
         assert {"new", "status", "profile"}.issubset(cmds)
+
+
+# ---------------------------------------------------------------------------
+# F-pr: pr command
+# ---------------------------------------------------------------------------
+
+
+class _CliStubSandbox:
+    """Stub sandbox: gitleaks-clean, then returns a canned PR URL from gh."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def exec(self, cmd: str, *, cwd: str = "/workspace", timeout_sec: int = 60):
+        from maf_coder.agents.results import CommandResult
+
+        self.calls.append(cmd)
+        if "gitleaks" in cmd:
+            return CommandResult(command=cmd, exit_code=0, stdout="[]", stderr="", duration_sec=0.0)
+        return CommandResult(
+            command=cmd,
+            exit_code=0,
+            stdout="https://github.com/acme/widget/pull/5",
+            stderr="",
+            duration_sec=0.0,
+        )
+
+
+def test_cmd_pr_calls_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "r"
+    _write_repo(repo)
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(tmp_path / "missions"))
+    sandbox = _CliStubSandbox()
+    out = cli.cmd_pr(
+        mission_id="m-pr-cli",
+        repo=repo,
+        head_branch="feature/x",
+        provider="gh",
+        router_config=router,
+        sandbox=sandbox,
+    )
+    assert out["created"] is True
+    assert out["url"] == "https://github.com/acme/widget/pull/5"
+    assert any(c.startswith("gh pr create") for c in sandbox.calls)
+
+
+def test_app_has_pr_command() -> None:
+    if cli._TYPER_AVAILABLE:
+        names = {c.name for c in cli.app.registered_commands}
+        assert "pr" in names
