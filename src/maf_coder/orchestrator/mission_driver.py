@@ -88,6 +88,22 @@ class MissionDriver:
         self.sandbox = config.sandbox_factory()
         self._scheduler: Scheduler | None = None
         self._started_at: datetime | None = None
+        # Effective Coder provider for the 异-provider rule's dynamic half. Use
+        # the explicit config value if given, else derive it from the Coder's
+        # configured primary model. Defensive: a malformed/partial router config
+        # falls back to None (dynamic half stays off; static forbidden_providers
+        # on validators still protects) rather than breaking mission construction.
+        self.coder_provider_in_use: str | None = config.coder_provider_in_use
+        if self.coder_provider_in_use is None:
+            try:
+                self.coder_provider_in_use = self.router.provider_for_role(
+                    Role.CODER_WORKER.value
+                )
+            except Exception:
+                logger.warning(
+                    "could not derive coder_provider_in_use from router config; "
+                    "dynamic 异-provider half disabled (static rule still applies)"
+                )
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -285,7 +301,7 @@ class MissionDriver:
         ms = MissionState(
             mission_id=self.mission_id,
             started_at=self._started_at or datetime.now(UTC),
-            coder_provider_in_use=self.config.coder_provider_in_use,
+            coder_provider_in_use=self.coder_provider_in_use,
         )
         self.store.save_mission_state(ms)
 
@@ -357,7 +373,7 @@ class MissionDriver:
             sandbox=self.sandbox,
             agent_factory=agent_factory,
             mission_id=self.mission_id,
-            coder_provider_in_use=self.config.coder_provider_in_use,
+            coder_provider_in_use=self.coder_provider_in_use,
         )
         orch.attach_scheduler(scheduler)
         return scheduler

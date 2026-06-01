@@ -270,6 +270,16 @@ class ModelRouter:
 
     # -- Primary / fallback resolution ------------------------------------
 
+    def provider_for_role(self, role: str) -> str:
+        """The LiteLLM provider of a role's *configured primary* model.
+
+        Used by the MissionDriver to derive `coder_provider_in_use` (the Coder's
+        provider) so the dynamic half of the 异-provider rule engages. Reads the
+        raw primary (no forbidden-provider resolution — the Coder's own provider
+        is exactly the thing we're identifying).
+        """
+        return _provider_of(self.get_role_config(role).primary.model)
+
     def get_primary_model(
         self, role: str, *, coder_provider_in_use: str | None = None
     ) -> ModelConfig:

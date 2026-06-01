@@ -55,6 +55,32 @@ def test_cmd_mission_new_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert out["dry_run"] is True
 
 
+def test_cmd_mission_new_coder_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--coder-provider flows into mission_state; omitting it derives from the
+    router's coder_worker primary (anthropic in the test config)."""
+    from maf_coder.blackboard import ArtifactStore
+
+    repo = tmp_path / "r"
+    _write_repo(repo)
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    root = tmp_path / "missions"
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(root))
+
+    # explicit override
+    cli.cmd_mission_new(
+        goal="demo", repo=repo, mission_id="m-ovr", router_config=router,
+        dry_run=True, coder_provider="openai",
+    )
+    assert ArtifactStore(root, "m-ovr").load_mission_state().coder_provider_in_use == "openai"
+
+    # derived (no flag) -> anthropic from the test router
+    cli.cmd_mission_new(
+        goal="demo", repo=repo, mission_id="m-der", router_config=router, dry_run=True
+    )
+    assert ArtifactStore(root, "m-der").load_mission_state().coder_provider_in_use == "anthropic"
+
+
 def test_cmd_mission_status_for_running_mission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
