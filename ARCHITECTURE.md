@@ -644,8 +644,8 @@ If PR creation fails (auth / network / API error), the mission is NOT marked com
 | D | BehaviorValidator + 5 probe strategies, dual-validator chain gate, conflict arbitration | ✓ Code-complete (live-mission acceptance pending) |
 | SR | Smart Router: tier-based model selection (`tier_router`, `resolve_model`), route-decision logging — parallel track | ✓ Code-complete |
 | E | MissionSupervisor tick loop, Checkpoint/resume/rollback, Status Report + push, User Messages inbox, Budget Guard, Stuck Recovery | ✓ Code-complete (48h live acceptance pending) |
-| F | Cross-mission memory (project + global), retrieval integration | Next |
-| G | Production hardening, multi-project validation, real 7-day missions | After F |
+| F | Cross-mission memory (project + global), retrieval integration, PR workflow (gh/glab + gitleaks gate) | ✓ Code-complete (live acceptance pending) |
+| G | Production hardening, multi-project validation, real 7-day missions, metrics harness | Next (mostly acceptance) |
 
 This table is the **canonical cross-reference** between architecture and Build Plan. If a component is named here, it's covered. If not, it's out of scope.
 

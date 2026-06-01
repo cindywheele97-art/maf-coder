@@ -41,7 +41,7 @@ python scripts/smoke_test.py --dry-run  # plan check, no API calls
 
 `pytest` should always pass on `main`. If you commit while red, you've broken the bar.
 
-## Current phase: A–E code-complete (multi-day infra live); Phase F (cross-mission memory) next
+## Current phase: A–F code-complete (memory + PR workflow live); Phase G (real-world validation) next
 
 Phase A delivered:
 - All Pydantic schemas (`src/maf_coder/schemas/`)
@@ -64,11 +64,16 @@ Phase D is code-complete: the BehaviorValidator (`agents/behavior.py`, `prompts/
 
 Phase E is code-complete: the concurrent `MissionSupervisor` tick loop (`orchestrator/supervisor.py`) with a hook interface, plus three hooks/subsystems built on it — status reports + push adapters + user-message inbox (`orchestrator/status_report.py`, `push.py`, `inbox.py`), the budget guard (`orchestrator/budget.py` — bands at 50/80/100/150%, `mission_state.budget_mode`, scheduler honors "paused") + stuck-recovery triage (`recovery.py`), and resume/rollback + snapshot restore/GC + CLI (`orchestrator/checkpoint_store.py`, `mission_driver.resume`/`rollback`, `sandbox.restore_snapshot`, `maf-coder resume`/`rollback`). 459 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
 
-What remains for Phase D + E Build Plan exit criteria (acceptance, not code) — these need real Rust projects + API keys and are run by the human operator:
+Phase F is code-complete: cross-mission memory (`memory/` — per-repo `.maf-coder/memory.db` SQLite + global lessons, keyword/hybrid retrieval with time-decay + confidence, anti-poisoning `<historical_lesson>` framing, 50-item dedup), `mission_retro.md` assembly + the `save_retro` tool, retrieval injected into the Orchestrator's first message (cold-start-safe), and the PR workflow (`integrations/vcs.py` — `gh`/`glab` via sandbox, PR-description gen, artifact links, the existing `gitleaks_detect` reused as a pre-PR gate that refuses on findings, `create_pr` tool + `maf-coder pr` CLI). stdlib-only (no new deps). 512 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
+
+What remains for Phase D/E/F Build Plan exit criteria (acceptance, not code) — these need real Rust projects + API keys and are run by the human operator:
 - Behavior probes verified against a real Rust HTTP service / CLI tool / library mission; BehaviorValidator catching ≥2 logic bugs ReviewValidator missed
 - A real 48h continuous mission exercising checkpoint-rollback-resume, a status push, an inbox injection, and an 80% budget cautious-mode switch
+- Two related missions on one repo where the second's plan references the first's retro; ≥1 real GitHub PR a human calls "enough info"
 
-The Build Plan §Phase D/E exit criteria are the source of truth for "done". Next code phase is **F (cross-mission memory + PR workflow)** — see `docs/MAF_CODER_EXECUTION_PLAN.md §6`.
+The Build Plan §Phase D/E/F exit criteria are the source of truth for "done". Remaining phase is **G (real-world validation)** — largely acceptance (7-day mission, multi-project rotation, health-metric baseline); the only code is the G3 metrics harness. See `docs/MAF_CODER_EXECUTION_PLAN.md §7`.
+
+Two honest follow-ups carried forward: secondary memory-retrieval injection into `research.py`/`coder.py` `build_first_user_message` (only the Orchestrator is wired); and live-mission acceptance for D/E/F above.
 
 ## Implementation reading order (any phase)
 
