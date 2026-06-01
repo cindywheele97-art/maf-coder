@@ -30,7 +30,8 @@ from ..agents.security import SecurityWorkerAgent
 from ..blackboard import ArtifactStore
 from ..models import ModelRouter
 from ..sandbox import LocalShellSandbox, SandboxClient
-from ..schemas import MissionState, Role
+from ..schemas import Checkpoint, MissionState, Role
+from .checkpoint_store import CheckpointStore
 from .project_profiler import profile_project
 from .scheduler import Scheduler
 from .supervisor import MissionSupervisor
@@ -99,12 +100,19 @@ class MissionDriver:
         # driver's structure.
         scheduler = self._build_scheduler()
         self._scheduler = scheduler
+        await self._run_with_supervisor(scheduler, result_on_complete="complete")
 
-        # Run the supervisor concurrently with the scheduler. The supervisor is
-        # the Phase E spine: a heartbeat tick loop that later workstreams plug
-        # hooks into. It must be started before scheduler.run() and stopped on
-        # EVERY exit path (complete / aborted / crashed) — and a supervisor
-        # failure must NEVER change the mission result.
+    async def _run_with_supervisor(
+        self, scheduler: Scheduler, *, result_on_complete: str
+    ) -> None:
+        """Run the scheduler under a concurrent supervisor heartbeat.
+
+        Shared by ``start()`` and ``resume()``. The supervisor is the Phase E
+        spine: a heartbeat tick loop that later workstreams plug hooks into. It
+        must be started before scheduler.run() and stopped on EVERY exit path
+        (complete / aborted / crashed) — and a supervisor failure must NEVER
+        change the mission result.
+        """
         stop_event = asyncio.Event()
         supervisor = MissionSupervisor(
             store=self.store,
@@ -126,7 +134,7 @@ class MissionDriver:
                 await self._finalize(result="crashed")
                 raise
 
-            await self._finalize(result="complete")
+            await self._finalize(result=result_on_complete)
         finally:
             await self._stop_supervisor(stop_event, sup_task)
 
@@ -144,8 +152,96 @@ class MissionDriver:
             )
 
     async def resume(self, from_milestone: str | None = None) -> None:
-        """Resume a previously-started mission. Phase C+ work; raises NotImplemented."""
-        raise NotImplementedError("resume is not yet implemented (Phase C scope)")
+        """Resume a previously-started mission from a checkpoint.
+
+        Loads mission_state, picks the target checkpoint (the named milestone,
+        else the latest completed one), restores the sandbox from that
+        checkpoint's snapshot, resets mission_state to that position, then
+        re-enters the execution path for not-yet-complete work. A dry-run
+        mission resumes end-to-end (restore + finalize) with no scheduler.
+
+        FileNotFoundError-safe: a missing mission_state or checkpoint surfaces
+        as a clear error rather than a crash. The sandbox is always stopped on
+        every exit path.
+        """
+        self._started_at = datetime.now(UTC)
+        try:
+            state = self.store.load_mission_state()
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"resume: mission_state.json missing for {self.mission_id}"
+            ) from e
+
+        cp_store = CheckpointStore(self.store)
+        checkpoint = cp_store.resolve_target(state, from_milestone)
+
+        await self.sandbox.start(workspace_mount=self.config.repo_path)
+        try:
+            self.event_log.log_mission_start(
+                mission_id=self.mission_id,
+                goal=self.config.goal,
+                repo=str(self.config.repo_path),
+                expected_budget_usd=None,
+            )
+            await self._restore_from_checkpoint(state, checkpoint)
+
+            if self.config.dry_run:
+                logger.info("resume dry_run=True — restored state+sandbox, skipping execution")
+                await self._finalize(result="resume_dry_run_complete")
+                return
+
+            scheduler = self._build_scheduler()
+            self._scheduler = scheduler
+            await self._run_with_supervisor(scheduler, result_on_complete="resumed_complete")
+        finally:
+            await self._ensure_sandbox_stopped()
+
+    async def rollback(self, to_milestone: str) -> None:
+        """Roll the mission back to an EARLIER checkpoint.
+
+        Restores that checkpoint's snapshot, truncates
+        ``completed_milestones`` to those at/before ``to_milestone``, sets
+        ``current_milestone`` to it, and saves. Refuses to roll *forward*:
+        ``to_milestone`` must already be a completed milestone.
+
+        FileNotFoundError-safe and always stops the sandbox.
+        """
+        try:
+            state = self.store.load_mission_state()
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"rollback: mission_state.json missing for {self.mission_id}"
+            ) from e
+
+        if to_milestone not in state.completed_milestones:
+            raise ValueError(
+                f"rollback: {to_milestone!r} is not a completed milestone; "
+                f"completed={state.completed_milestones}. Cannot roll forward."
+            )
+
+        cp_store = CheckpointStore(self.store)
+        checkpoint = cp_store.load(to_milestone)  # FileNotFoundError if absent
+
+        await self.sandbox.start(workspace_mount=self.config.repo_path)
+        try:
+            await self._restore_snapshot(checkpoint)
+            idx = state.completed_milestones.index(to_milestone)
+            truncated = state.completed_milestones[: idx + 1]
+            new_state = state.model_copy(
+                update={
+                    "completed_milestones": truncated,
+                    "current_milestone": to_milestone,
+                }
+            )
+            self.store.save_mission_state(new_state)
+            self.event_log.log_checkpoint_created(
+                mission_id=self.mission_id,
+                milestone_id=to_milestone,
+                git_tag=checkpoint.git_tag,
+                snapshot_id=checkpoint.sandbox_snapshot_id,
+            )
+        finally:
+            await self._ensure_sandbox_stopped()
 
     # -- Internals ---------------------------------------------------------
 
@@ -220,6 +316,48 @@ class MissionDriver:
             raise
         except Exception:
             logger.exception("MissionDriver: supervisor task failed (ignored)")
+
+    async def _restore_snapshot(self, checkpoint: Checkpoint) -> None:
+        """Restore the sandbox from a checkpoint's snapshot, if one exists.
+
+        A snapshot id of '' / 'unknown' (commit_snapshot was best-effort and
+        failed at checkpoint time) is treated as "nothing to restore" — the
+        state reset still proceeds.
+        """
+        snap = checkpoint.sandbox_snapshot_id
+        if not snap or snap == "unknown":
+            logger.warning(
+                "restore: checkpoint %s has no usable snapshot id; skipping sandbox restore",
+                checkpoint.milestone_id,
+            )
+            return
+        await self.sandbox.restore_snapshot(snap)
+
+    async def _restore_from_checkpoint(
+        self, state: MissionState, checkpoint: Checkpoint
+    ) -> None:
+        """Restore sandbox + reset mission_state to the checkpoint's position."""
+        await self._restore_snapshot(checkpoint)
+        milestone = checkpoint.milestone_id
+        if milestone in state.completed_milestones:
+            idx = state.completed_milestones.index(milestone)
+            completed = state.completed_milestones[: idx + 1]
+        else:
+            completed = list(state.completed_milestones)
+        new_state = state.model_copy(
+            update={
+                "completed_milestones": completed,
+                "current_milestone": milestone,
+            }
+        )
+        self.store.save_mission_state(new_state)
+
+    async def _ensure_sandbox_stopped(self) -> None:
+        """Stop the sandbox, swallowing+logging any error (finally-safe)."""
+        try:
+            await self.sandbox.stop(preserve_volumes=True)
+        except Exception:
+            logger.exception("MissionDriver: sandbox.stop failed (ignored)")
 
     def _elapsed_hours(self) -> float:
         if self._started_at is None:

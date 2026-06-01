@@ -148,6 +148,60 @@ def cmd_mission_routing_stats(mission_id: str) -> dict[str, Any]:
     }
 
 
+def cmd_resume(
+    *,
+    mission_id: str,
+    repo: Path,
+    from_milestone: str | None = None,
+    router_config: Path | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Resume an existing mission from a checkpoint. JSON-serializable summary."""
+    from .orchestrator import MissionConfig, MissionDriver
+
+    cfg = MissionConfig(
+        missions_root=_missions_root(),
+        repo_path=repo.resolve(),
+        router_config=(router_config or _default_router_config()).resolve(),
+        goal="(resume)",
+        dry_run=dry_run,
+    )
+    driver = MissionDriver(mission_id=mission_id, config=cfg)
+    asyncio.run(driver.resume(from_milestone=from_milestone))
+    return {
+        "mission_id": mission_id,
+        "action": "resume",
+        "from_milestone": from_milestone,
+        "dry_run": dry_run,
+    }
+
+
+def cmd_rollback(
+    *,
+    mission_id: str,
+    repo: Path,
+    to_milestone: str,
+    router_config: Path | None = None,
+) -> dict[str, Any]:
+    """Roll a mission back to an earlier checkpoint. JSON-serializable summary."""
+    from .orchestrator import MissionConfig, MissionDriver
+
+    cfg = MissionConfig(
+        missions_root=_missions_root(),
+        repo_path=repo.resolve(),
+        router_config=(router_config or _default_router_config()).resolve(),
+        goal="(rollback)",
+        dry_run=True,
+    )
+    driver = MissionDriver(mission_id=mission_id, config=cfg)
+    asyncio.run(driver.rollback(to_milestone=to_milestone))
+    return {
+        "mission_id": mission_id,
+        "action": "rollback",
+        "to_milestone": to_milestone,
+    }
+
+
 def cmd_mission_profile(repo: Path) -> dict[str, Any]:
     """Run project profiler against a repo path and return the profile dict."""
     from .orchestrator import profile_project
@@ -220,6 +274,50 @@ if _TYPER_AVAILABLE:
         result = cmd_mission_profile(repo)
         typer.echo(json.dumps(result, indent=2))
 
+    @app.command("resume")
+    def _resume(
+        mission_id: str = typer.Argument(..., help="Mission id to resume."),
+        repo: Path = typer.Option(..., "--repo", "-r", help="Path to the target Rust repo."),
+        from_milestone: str | None = typer.Option(
+            None, "--from", help="Checkpoint milestone to resume from (default: latest)."
+        ),
+        router_config: Path | None = typer.Option(
+            None, "--router-config", help="Path to droid_whispering.yaml."
+        ),
+        dry_run: bool = typer.Option(
+            True,
+            "--dry-run/--no-dry-run",
+            help="Dry run restores state+sandbox without re-running execution.",
+        ),
+    ) -> None:
+        result = cmd_resume(
+            mission_id=mission_id,
+            repo=repo,
+            from_milestone=from_milestone,
+            router_config=router_config,
+            dry_run=dry_run,
+        )
+        typer.echo(json.dumps(result, indent=2))
+
+    @app.command("rollback")
+    def _rollback(
+        mission_id: str = typer.Argument(..., help="Mission id to roll back."),
+        to_milestone: str = typer.Option(
+            ..., "--to", help="Completed milestone to roll back to."
+        ),
+        repo: Path = typer.Option(..., "--repo", "-r", help="Path to the target Rust repo."),
+        router_config: Path | None = typer.Option(
+            None, "--router-config", help="Path to droid_whispering.yaml."
+        ),
+    ) -> None:
+        result = cmd_rollback(
+            mission_id=mission_id,
+            repo=repo,
+            to_milestone=to_milestone,
+            router_config=router_config,
+        )
+        typer.echo(json.dumps(result, indent=2))
+
 
 def main() -> None:  # pragma: no cover - thin shell entry
     if _TYPER_AVAILABLE:
@@ -235,5 +333,7 @@ __all__ = [
     "cmd_mission_profile",
     "cmd_mission_routing_stats",
     "cmd_mission_status",
+    "cmd_resume",
+    "cmd_rollback",
     "main",
 ]

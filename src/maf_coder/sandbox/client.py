@@ -166,6 +166,18 @@ class SandboxClient(ABC):
         """
 
     @abstractmethod
+    async def restore_snapshot(self, snapshot_id: str) -> None:
+        """Restore the sandbox to a previously committed snapshot.
+
+        Inverse of :meth:`commit_snapshot`. `snapshot_id` is the backend
+        identifier that ``commit_snapshot`` returned (Local: tarball path;
+        Docker: committed image id/tag). The sandbox must be started.
+
+        Raises FileNotFoundError if the snapshot does not exist, and
+        SandboxError for backend-level failures.
+        """
+
+    @abstractmethod
     async def health_check(self) -> bool:
         """Return True iff the sandbox can execute commands right now."""
 
@@ -323,19 +335,54 @@ class LocalShellSandbox(SandboxClient):
         )
 
     async def commit_snapshot(self, image_tag: str) -> str:
-        """For local backend, snapshot = tarball of the workspace root."""
+        """For local backend, snapshot = tarball of the workspace root.
+
+        The returned id is the absolute path to the tarball. `image_tag` may
+        contain '/' (checkpoints use `mission/<id>/<milestone>`); we sanitize
+        it to a flat filename so the archive lands beside the workspace root
+        rather than in non-existent nested dirs.
+        """
         if self.workspace_root is None:
             raise SandboxError("LocalShellSandbox not started")
-        tarball = self.workspace_root.parent / f"{image_tag}.tar.gz"
+        safe_tag = image_tag.replace("/", "__")
+        base = self.workspace_root.parent / safe_tag
         # `shutil.make_archive` is sync; offload to a thread.
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
+        archive = await loop.run_in_executor(
             None,
-            lambda: shutil.make_archive(
-                str(tarball.with_suffix("").with_suffix("")), "gztar", str(self.workspace_root)
-            ),
+            lambda: shutil.make_archive(str(base), "gztar", str(self.workspace_root)),
         )
-        return str(tarball)
+        return str(archive)
+
+    async def restore_snapshot(self, snapshot_id: str) -> None:
+        """Restore the workspace from a tarball produced by commit_snapshot.
+
+        Round-trips commit_snapshot: clears the current workspace contents and
+        unpacks the archive back into workspace_root. `snapshot_id` is the
+        tarball path returned by commit_snapshot.
+        """
+        if self.workspace_root is None:
+            raise SandboxError("LocalShellSandbox not started")
+        tarball = Path(snapshot_id)
+        if not tarball.exists():
+            raise FileNotFoundError(f"snapshot not found: {snapshot_id}")
+        root = self.workspace_root
+
+        def _restore() -> None:
+            # Clear existing workspace contents (keep the root dir itself).
+            for child in root.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    with contextlib.suppress(FileNotFoundError):
+                        child.unlink()
+            shutil.unpack_archive(str(tarball), str(root), "gztar")
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, _restore)
+        except (shutil.ReadError, OSError) as e:
+            raise SandboxError(f"restore_snapshot failed: {e}") from e
 
     async def health_check(self) -> bool:
         if not self._started:
@@ -370,6 +417,7 @@ class DockerSandbox(SandboxClient):
         self._client: Any = None
         self._container: Any = None
         self._started = False
+        self._volume_binds: dict[str, dict[str, str]] = {}
 
     # -- Availability -----------------------------------------------------
 
@@ -413,6 +461,7 @@ class DockerSandbox(SandboxClient):
         }
         for name, container_dest in (volumes or {}).items():
             volume_binds[name] = {"bind": container_dest, "mode": "rw"}
+        self._volume_binds = volume_binds
 
         loop = asyncio.get_event_loop()
         self._container = await loop.run_in_executor(
@@ -552,6 +601,55 @@ class DockerSandbox(SandboxClient):
             None, lambda: self._container.commit(repository=image_tag)
         )
         return str(getattr(image, "id", image))
+
+    async def restore_snapshot(self, snapshot_id: str) -> None:
+        """Recreate the container from a committed image (minimal restore).
+
+        Stops/removes the current container and runs a fresh one from
+        `snapshot_id` (the committed image id/tag), reusing the original
+        volume binds captured at start(). The host workspace mount is shared,
+        so file state on the mount is whatever the host has; this restores the
+        container's own (non-mounted) filesystem layers.
+        """
+        if self._client is None:
+            raise SandboxError("DockerSandbox not started")
+        loop = asyncio.get_event_loop()
+
+        def _exists() -> bool:
+            try:
+                self._client.images.get(snapshot_id)
+                return True
+            except Exception:
+                return False
+
+        if not await loop.run_in_executor(None, _exists):
+            raise FileNotFoundError(f"snapshot image not found: {snapshot_id}")
+
+        # Tear down the current container before recreating from the snapshot.
+        if self._container is not None:
+            try:
+                await loop.run_in_executor(None, self._container.stop)
+                await loop.run_in_executor(None, lambda: self._container.remove(v=False))
+            except Exception:
+                logger.exception("DockerSandbox.restore_snapshot: teardown failed; continuing")
+            self._container = None
+
+        self._container = await loop.run_in_executor(
+            None,
+            lambda: self._client.containers.run(
+                snapshot_id,
+                name=self.container_name,
+                command="sleep infinity",
+                detach=True,
+                tty=False,
+                volumes=self._volume_binds,
+                working_dir=DEFAULT_WORKSPACE_PREFIX,
+                auto_remove=False,
+                network_mode="none",
+            ),
+        )
+        self._started = True
+        logger.info("DockerSandbox restored from snapshot=%s", snapshot_id)
 
     async def health_check(self) -> bool:
         if not self._started:
