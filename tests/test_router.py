@@ -143,6 +143,13 @@ class TestPrimaryResolutionNoConstraints:
         m = router.get_primary_model("coder_worker")
         assert m.model == "anthropic/claude-sonnet-4-6"
 
+    def test_provider_for_role_reads_raw_primary(self, minimal_config: Path) -> None:
+        # provider_for_role identifies the role's OWN provider (no forbidden
+        # resolution) — this is how the driver derives coder_provider_in_use.
+        router = ModelRouter(minimal_config)
+        assert router.provider_for_role("coder_worker") == "anthropic"
+        assert router.provider_for_role("orchestrator") == "anthropic"
+
 
 # ============================================================================
 # Static forbidden_providers (yaml-level constraint)

@@ -70,8 +70,14 @@ def cmd_mission_new(
     mission_id: str | None = None,
     router_config: Path | None = None,
     dry_run: bool = True,
+    coder_provider: str | None = None,
 ) -> dict[str, Any]:
-    """Bootstrap a new mission. Returns a JSON-serializable summary."""
+    """Bootstrap a new mission. Returns a JSON-serializable summary.
+
+    `coder_provider` overrides the Coder's provider for the 异-provider rule.
+    Left None (the usual case), the MissionDriver derives it from the router's
+    coder_worker primary model.
+    """
     from .orchestrator import MissionConfig, MissionDriver
 
     mid = mission_id or _generate_mission_id()
@@ -81,6 +87,7 @@ def cmd_mission_new(
         router_config=(router_config or _default_router_config()).resolve(),
         goal=goal,
         dry_run=dry_run,
+        coder_provider_in_use=coder_provider,
     )
     driver = MissionDriver(mission_id=mid, config=cfg)
     asyncio.run(driver.start())
@@ -362,6 +369,12 @@ if _TYPER_AVAILABLE:
             "--dry-run/--no-dry-run",
             help="Dry run skips agent execution; produces profile + state only.",
         ),
+        coder_provider: str | None = typer.Option(
+            None,
+            "--coder-provider",
+            help="Override the Coder's provider for the 异-provider rule "
+            "(e.g. 'anthropic'). Default: derived from the router's coder_worker model.",
+        ),
     ) -> None:
         result = cmd_mission_new(
             goal=goal,
@@ -369,6 +382,7 @@ if _TYPER_AVAILABLE:
             mission_id=mission_id,
             router_config=router_config,
             dry_run=dry_run,
+            coder_provider=coder_provider,
         )
         typer.echo(json.dumps(result, indent=2))
 

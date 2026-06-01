@@ -61,6 +61,42 @@ async def test_dry_run_produces_profile_and_state(tmp_path: Path) -> None:
     assert "mission_end" in kinds
 
 
+def test_coder_provider_derived_from_router(tmp_path: Path) -> None:
+    """When config leaves coder_provider_in_use=None, the driver derives it from
+    the router's coder_worker primary (so the dynamic 异-provider half engages)."""
+    repo = tmp_path / "repo"
+    _write_repo(repo)
+    router_cfg = tmp_path / "droid.yaml"
+    _write_router(router_cfg)  # coder_worker -> anthropic/x
+    cfg = MissionConfig(
+        missions_root=tmp_path / "missions",
+        repo_path=repo,
+        router_config=router_cfg,
+        goal="demo",
+        dry_run=True,
+    )
+    driver = MissionDriver(mission_id="m-cp", config=cfg)
+    assert driver.coder_provider_in_use == "anthropic"
+
+
+def test_coder_provider_explicit_override_wins(tmp_path: Path) -> None:
+    """An explicit config value is used verbatim — no derivation."""
+    repo = tmp_path / "repo"
+    _write_repo(repo)
+    router_cfg = tmp_path / "droid.yaml"
+    _write_router(router_cfg)
+    cfg = MissionConfig(
+        missions_root=tmp_path / "missions",
+        repo_path=repo,
+        router_config=router_cfg,
+        goal="demo",
+        dry_run=True,
+        coder_provider_in_use="openai",
+    )
+    driver = MissionDriver(mission_id="m-cp2", config=cfg)
+    assert driver.coder_provider_in_use == "openai"
+
+
 def test_orchestrator_bootstrap_task_shape(tmp_path: Path) -> None:
     """The seed task is a valid ORCHESTRATOR task carrying the mission goal."""
     repo = tmp_path / "repo"

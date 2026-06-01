@@ -18,10 +18,11 @@ runs the mission instead of no-op'ing. Covered by
 `tests/orchestrator/test_mission_driver.py::test_real_mode_seeds_and_runs_orchestrator`
 (stub Orchestrator, no LLM).
 
-Still optional (not blocking a first run): `MissionConfig.coder_provider_in_use`
-is `None` from the CLI, so only the *static* `forbidden_providers: [anthropic]`
-half of the 异-provider rule is active (which already protects validators). Wiring
-the Coder's provider through would also engage the dynamic half — a small follow-up.
+The Coder provider is now wired too: `MissionDriver` derives
+`coder_provider_in_use` from the router's `coder_worker` primary model (or use
+the `maf-coder mission new --coder-provider <p>` override), so **both** the
+static (`forbidden_providers`) and dynamic halves of the 异-provider rule are
+active on a real run.
 
 > Caveat for run #1: the bootstrap seeds exactly one Orchestrator turn. It lays
 > out the initial DAG up-front (as in `WORKED_EXAMPLE.md`). Re-invoking the
@@ -186,5 +187,3 @@ maf-coder metrics --markdown
   or invoke `maf-coder pr` manually (above).
 - **Per-mission `budget.yaml`** isn't auto-created by `mission new` — drop one in
   the mission dir if you want the budget guard armed on run #1.
-- **`coder_provider_in_use` is `None`** from the CLI — static `forbidden_providers`
-  still protects validators, but wire it through for the dynamic half.
