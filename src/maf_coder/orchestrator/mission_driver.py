@@ -30,7 +30,15 @@ from ..agents.security import SecurityWorkerAgent
 from ..blackboard import ArtifactStore
 from ..models import ModelRouter
 from ..sandbox import LocalShellSandbox, SandboxClient
-from ..schemas import Checkpoint, MissionState, Role
+from ..schemas import (
+    Checkpoint,
+    MissionState,
+    NetworkPolicy,
+    Permission,
+    Role,
+    Task,
+    TaskBudget,
+)
 from .budget import make_budget_guard
 from .checkpoint_store import CheckpointStore
 from .inbox import make_inbox_poll_hook
@@ -103,11 +111,13 @@ class MissionDriver:
             await self._finalize(result="dry_run_complete")
             return
 
-        # Real-mode planning + execution would happen here. We provide the
-        # wiring so future Phase B/C work can drop in without touching the
-        # driver's structure.
+        # Bootstrap the mission: seed a single Orchestrator task. When it runs,
+        # the Orchestrator plans, locks validation_contract.yaml, and dispatches
+        # the worker/validator DAG via `dispatch_task` — which extends THIS same
+        # scheduler loop, so the seeded task is the only thing the driver adds.
         scheduler = self._build_scheduler()
         self._scheduler = scheduler
+        await scheduler.add_task(self._orchestrator_bootstrap_task())
         await self._run_with_supervisor(scheduler, result_on_complete="complete")
 
     async def _run_with_supervisor(
@@ -287,6 +297,35 @@ class MissionDriver:
             self.store.save_project_profile(profile)
         except Exception as e:
             logger.warning("MissionDriver: profile_project failed: %r", e)
+
+    def _orchestrator_bootstrap_task(self) -> Task:
+        """The single seed task that boots a real mission.
+
+        The Orchestrator agent runs this, then plans + locks the validation
+        contract + dispatches the worker/validator DAG via `dispatch_task`. Its
+        own task is added directly (not via `dispatch_task`), so it is not gated
+        by the contract that doesn't exist yet. `allowed_tools=[]` means "no
+        per-task tool restriction" — the agent's tool registry already scopes it.
+        """
+        return Task(
+            task_id="orchestrate",
+            parent_milestone="m0",
+            owner=Role.ORCHESTRATOR,
+            goal=self.config.goal,
+            background=(
+                "Mission bootstrap. The ProjectProfile and mission_state already "
+                "exist. Produce plan.md, lock validation_contract.yaml, then "
+                "dispatch the worker/validator DAG with dispatch_task."
+            ),
+            acceptance_criteria=[],
+            required_outputs=["plan.md", "validation_contract.yaml"],
+            permission=Permission(
+                allowed_paths=[],
+                allowed_tools=[],
+                network_policy=NetworkPolicy.NONE,
+            ),
+            budget=TaskBudget(max_tokens=200_000, max_runtime_sec=3600),
+        )
 
     def _build_scheduler(self) -> Scheduler:
         # Build agent factories. We bind real prompts; tests will skip start().
