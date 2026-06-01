@@ -71,7 +71,7 @@ What remains for Phase D/E/F Build Plan exit criteria (acceptance, not code) —
 - A real 48h continuous mission exercising checkpoint-rollback-resume, a status push, an inbox injection, and an 80% budget cautious-mode switch
 - Two related missions on one repo where the second's plan references the first's retro; ≥1 real GitHub PR a human calls "enough info"
 
-The Build Plan §Phase D/E/F exit criteria are the source of truth for "done". Remaining phase is **G (real-world validation)** — largely acceptance (7-day mission, multi-project rotation, health-metric baseline); the only code is the G3 metrics harness. See `docs/MAF_CODER_EXECUTION_PLAN.md §7`.
+The Build Plan §Phase D/E/F exit criteria are the source of truth for "done". Remaining phase is **G (real-world validation)** — largely acceptance (7-day mission, multi-project rotation). Its one code deliverable, the **G3 health-metric baseline harness, is complete** (`metrics/` + `maf-coder metrics` — first-pass / final-pass / cost / wall-clock / human-intervention / routing-savings, derived from each mission's `events.jsonl` + `mission_state.json`; PR-review pass rate is the one human-annotated input). See `docs/MAF_CODER_EXECUTION_PLAN.md §7`.
 
 Two honest follow-ups carried forward: secondary memory-retrieval injection into `research.py`/`coder.py` `build_first_user_message` (only the Orchestrator is wired); and live-mission acceptance for D/E/F above.
 
