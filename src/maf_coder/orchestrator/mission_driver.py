@@ -33,6 +33,7 @@ from ..sandbox import LocalShellSandbox, SandboxClient
 from ..schemas import MissionState, Role
 from .project_profiler import profile_project
 from .scheduler import Scheduler
+from .supervisor import MissionSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class MissionConfig:
     )
     dry_run: bool = False
     coder_provider_in_use: str | None = None
+    supervisor_tick_sec: float = 60.0
 
 
 class MissionDriver:
@@ -97,18 +99,36 @@ class MissionDriver:
         # driver's structure.
         scheduler = self._build_scheduler()
         self._scheduler = scheduler
-        try:
-            await scheduler.run()
-        except asyncio.CancelledError:
-            logger.warning("MissionDriver: cancelled")
-            await self._finalize(result="aborted")
-            raise
-        except Exception as e:
-            logger.exception("MissionDriver crashed: %r", e)
-            await self._finalize(result="crashed")
-            raise
 
-        await self._finalize(result="complete")
+        # Run the supervisor concurrently with the scheduler. The supervisor is
+        # the Phase E spine: a heartbeat tick loop that later workstreams plug
+        # hooks into. It must be started before scheduler.run() and stopped on
+        # EVERY exit path (complete / aborted / crashed) — and a supervisor
+        # failure must NEVER change the mission result.
+        stop_event = asyncio.Event()
+        supervisor = MissionSupervisor(
+            store=self.store,
+            event_log=self.event_log,
+            mission_id=self.mission_id,
+            started_at=self._started_at or datetime.now(UTC),
+            tick_interval_sec=self.config.supervisor_tick_sec,
+        )
+        sup_task = asyncio.create_task(supervisor.run(stop_event))
+        try:
+            try:
+                await scheduler.run()
+            except asyncio.CancelledError:
+                logger.warning("MissionDriver: cancelled")
+                await self._finalize(result="aborted")
+                raise
+            except Exception as e:
+                logger.exception("MissionDriver crashed: %r", e)
+                await self._finalize(result="crashed")
+                raise
+
+            await self._finalize(result="complete")
+        finally:
+            await self._stop_supervisor(stop_event, sup_task)
 
     async def stop(self, *, graceful: bool = True) -> None:
         try:
@@ -185,6 +205,21 @@ class MissionDriver:
         )
         orch.attach_scheduler(scheduler)
         return scheduler
+
+    async def _stop_supervisor(
+        self, stop_event: asyncio.Event, sup_task: asyncio.Task[None]
+    ) -> None:
+        """Always stop the supervisor and await its task. A supervisor failure
+        must not change the mission result, so its exception is swallowed (and
+        logged) here rather than propagated.
+        """
+        stop_event.set()
+        try:
+            await sup_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("MissionDriver: supervisor task failed (ignored)")
 
     def _elapsed_hours(self) -> float:
         if self._started_at is None:
