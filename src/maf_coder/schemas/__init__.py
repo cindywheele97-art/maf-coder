@@ -40,6 +40,7 @@ from .lifecycle import (
     MissionState,
     StatusReport,
 )
+from .memory import Lesson, MemoryKind, MemoryRecord, RetroEntry
 from .message import Budgets, Message, RiskFlag
 from .profile import (
     BehaviorProbeSpec,
@@ -121,4 +122,9 @@ __all__ = [
     "MissionState",
     "BudgetStatus",
     "MilestoneStatus",
+    # Memory (Phase F — F-memory; additive, grouped for clean merge)
+    "MemoryRecord",
+    "MemoryKind",
+    "Lesson",
+    "RetroEntry",
 ]

@@ -11,6 +11,7 @@ want a clean two-phase wiring: Agent first, Scheduler second.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from typing import Any
 from ..schemas import Role
 from .base import BaseAgent, TaskContext
 from .tools.orchestrator_tools import _SchedulerLike, build_orchestrator_tools
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,11 @@ class OrchestratorAgent(BaseAgent[OrchestratorRunSummary]):
             "4. Use `escalate_to_human_gate` for ambiguous decisions.",
             "5. Final message: one paragraph summary + next-action recommendation.",
         ]
+        # Phase F — F-memory: inject prior-mission lessons as NON-binding context.
+        # Cold-start safe: no db / any error ⇒ nothing appended, never crashes.
+        memory_block = _retrieve_memory_block(ctx)
+        if memory_block:
+            lines += ["", memory_block]
         return "\n".join(lines)
 
     def parse_output(self, raw_output: str, ctx: TaskContext) -> OrchestratorRunSummary:
@@ -72,6 +80,32 @@ class OrchestratorAgent(BaseAgent[OrchestratorRunSummary]):
 
     def _null_output(self) -> OrchestratorRunSummary:
         return OrchestratorRunSummary(final_message="", tools_invoked=[])
+
+
+# ---------------------------------------------------------------------------
+# Phase F — F-memory: retrieval injection helper (cold-start safe)
+# ---------------------------------------------------------------------------
+
+
+def _retrieve_memory_block(ctx: TaskContext, *, top_k: int = 5) -> str:
+    """Retrieve prior-mission lessons for this task and render them.
+
+    Returns "" on any failure or empty result so retrieval can never break the
+    mission's first user message (no db yet, locked db, etc.).
+    """
+    try:
+        from ..memory import render_results, retrieve
+        from ..memory.paths import open_project_memory
+
+        memory = open_project_memory(ctx.store)
+        try:
+            results = retrieve(ctx.task.goal, memory, top_k=top_k)
+        finally:
+            memory.close()
+        return render_results(results)
+    except Exception:  # pragma: no cover - defensive cold-start guard
+        logger.warning("memory retrieval injection failed; continuing without lessons")
+        return ""
 
 
 __all__ = ["OrchestratorAgent", "OrchestratorRunSummary"]
