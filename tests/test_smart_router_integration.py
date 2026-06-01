@@ -280,6 +280,113 @@ class TestForbiddenProviderTierOverrideIsRejected:
 
 
 # ---------------------------------------------------------------------------
+# SR-3 — route-decision logging. The enabled path emits exactly one event; the
+# disabled path emits NOTHING (the hard invariant: disabled routing is silent).
+# ---------------------------------------------------------------------------
+
+
+class _RecordingEventLog:
+    """Captures log_route_decision calls so tests can assert emit count + shape.
+
+    Structural match for the router's RouteEventLog Protocol — deliberately not
+    the real EventLog, so these tests stay a pure unit test of the emit wiring.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def log_route_decision(
+        self,
+        *,
+        mission_id: str,
+        task_id: str | None,
+        tier: str,
+        model: str,
+        saved_vs_baseline_usd: float | None = None,
+        actor: str | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "tier": tier,
+                "model": model,
+                "saved_vs_baseline_usd": saved_vs_baseline_usd,
+                "actor": actor,
+            }
+        )
+
+
+class TestRouteDecisionEmission:
+    async def test_enabled_path_logs_exactly_one(self, sr_config: Path) -> None:
+        # WHY: every tier-routed resolution must leave exactly one audit record —
+        # not zero (lost observability), not many (double-counted savings).
+        router = ModelRouter(sr_config)
+        sink = _RecordingEventLog()
+        await router.resolve_model(
+            "coder_worker",
+            task=_task(),
+            judge=_judge("reasoning"),
+            event_log=sink,
+            mission_id="m1",
+            task_id="t1",
+        )
+        assert len(sink.calls) == 1
+        call = sink.calls[0]
+        assert call["tier"] == "reasoning"
+        assert call["model"] == "anthropic/claude-opus-4-7"
+        assert call["task_id"] == "t1"
+        assert call["actor"] == "coder_worker"
+        # opus is pricier than the sonnet baseline → savings is negative & priced.
+        assert call["saved_vs_baseline_usd"] is not None
+        assert call["saved_vs_baseline_usd"] < 0
+
+    async def test_complex_tier_still_logs_one(self, sr_config: Path) -> None:
+        # complex returns primary, but it IS a real routing decision → log it.
+        router = ModelRouter(sr_config)
+        sink = _RecordingEventLog()
+        await router.resolve_model(
+            "coder_worker",
+            task=_task(),
+            judge=_judge("complex"),
+            event_log=sink,
+            mission_id="m1",
+            task_id="t1",
+        )
+        assert len(sink.calls) == 1
+        # baseline == chosen (primary) → priced models → savings is a real 0.0.
+        assert sink.calls[0]["saved_vs_baseline_usd"] == pytest.approx(0.0)
+
+    async def test_disabled_global_path_logs_nothing(self, sr_disabled_config: Path) -> None:
+        # HARD INVARIANT: the disabled path must emit NOTHING new.
+        router = ModelRouter(sr_disabled_config)
+        sink = _RecordingEventLog()
+        await router.resolve_model(
+            "coder_worker",
+            task=_task(),
+            judge=_judge("reasoning"),
+            event_log=sink,
+            mission_id="m1",
+            task_id="t1",
+        )
+        assert sink.calls == []
+
+    async def test_per_role_disabled_path_logs_nothing(self, sr_config: Path) -> None:
+        # review_validator is per-role disabled even with SR globally on.
+        router = ModelRouter(sr_config)
+        sink = _RecordingEventLog()
+        await router.resolve_model(
+            "review_validator",
+            task=_task(),
+            judge=_judge("reasoning"),
+            event_log=sink,
+            mission_id="m1",
+            task_id="t1",
+        )
+        assert sink.calls == []
+
+
+# ---------------------------------------------------------------------------
 # default_tier fallback path (judge unparseable) still applies a compliant model
 # ---------------------------------------------------------------------------
 

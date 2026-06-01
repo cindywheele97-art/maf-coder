@@ -238,6 +238,9 @@ class BaseAgent(ABC, Generic[T]):
                     role_name,
                     task=task,
                     coder_provider_in_use=coder_provider_in_use,
+                    event_log=self.event_log,
+                    mission_id=mission_id,
+                    task_id=task.task_id,
                 )
             else:
                 model_cfg = self.router.get_primary_model(

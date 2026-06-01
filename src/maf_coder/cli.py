@@ -111,6 +111,43 @@ def cmd_mission_status(mission_id: str) -> dict[str, Any]:
     }
 
 
+def cmd_mission_routing_stats(mission_id: str) -> dict[str, Any]:
+    """Tail ROUTE_DECISION events (SR-3) and summarise tier usage + savings.
+
+    Sums ``saved_vs_baseline_usd`` across priced decisions; unpriced ones (None)
+    are counted separately rather than treated as zero, so the total stays honest
+    about how much of the routing it could actually estimate.
+    """
+    from .blackboard import ArtifactStore, EventKind
+
+    store = ArtifactStore(_missions_root(), mission_id)
+    ev = store.event_log()
+
+    decisions = list(ev.filter_kind(EventKind.ROUTE_DECISION))
+    by_tier: dict[str, int] = {}
+    total_saved = 0.0
+    priced = 0
+    unpriced = 0
+    for e in decisions:
+        tier = str(e.payload.get("tier", "unknown"))
+        by_tier[tier] = by_tier.get(tier, 0) + 1
+        saved = e.payload.get("saved_vs_baseline_usd")
+        if saved is None:
+            unpriced += 1
+        else:
+            priced += 1
+            total_saved += float(saved)
+
+    return {
+        "mission_id": mission_id,
+        "route_decisions": len(decisions),
+        "by_tier": by_tier,
+        "total_saved_vs_baseline_usd": total_saved,
+        "priced_decisions": priced,
+        "unpriced_decisions": unpriced,
+    }
+
+
 def cmd_mission_profile(repo: Path) -> dict[str, Any]:
     """Run project profiler against a repo path and return the profile dict."""
     from .orchestrator import profile_project
@@ -161,6 +198,21 @@ if _TYPER_AVAILABLE:
         result = cmd_mission_status(mission_id)
         typer.echo(json.dumps(result, indent=2))
 
+    @mission_app.command("stats")
+    def _mission_stats(
+        mission_id: str = typer.Argument(..., help="Mission id."),
+        routing: bool = typer.Option(
+            False, "--routing", help="Summarise Smart Router (SR-3) route decisions + savings."
+        ),
+    ) -> None:
+        if not routing:
+            typer.echo(
+                json.dumps({"error": "pass --routing for the route-decision summary"}, indent=2)
+            )
+            raise typer.Exit(code=2)
+        result = cmd_mission_routing_stats(mission_id)
+        typer.echo(json.dumps(result, indent=2))
+
     @mission_app.command("profile")
     def _mission_profile(
         repo: Path = typer.Option(..., "--repo", "-r", help="Path to the target Rust repo."),
@@ -181,6 +233,7 @@ __all__ = [
     "app",
     "cmd_mission_new",
     "cmd_mission_profile",
+    "cmd_mission_routing_stats",
     "cmd_mission_status",
     "main",
 ]

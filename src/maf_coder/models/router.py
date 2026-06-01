@@ -21,7 +21,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,6 +30,26 @@ from ..schemas.routing import TierModelOverride
 from .tier_router import JudgeFn
 
 logger = logging.getLogger(__name__)
+
+
+class RouteEventLog(Protocol):
+    """Minimal structural type for the EventLog sink SR-3 emits into.
+
+    Declared as a Protocol so the models layer stays decoupled from
+    ``blackboard.EventLog`` (no import cycle); any object exposing this method
+    works, which also keeps it trivial to stub in tests.
+    """
+
+    def log_route_decision(
+        self,
+        *,
+        mission_id: str,
+        task_id: str | None,
+        tier: str,
+        model: str,
+        saved_vs_baseline_usd: float | None = ...,
+        actor: str | None = ...,
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +163,53 @@ def _provider_of(model_id: str) -> str:
         return model_id.split("/", 1)[0]
     # LiteLLM convention: bare names default to openai
     return "openai"
+
+
+# SR-3 observability scaffolding: a DELIBERATELY tiny, approximate $/Mtok table
+# used only to estimate "what did routing save vs the baseline primary". This is
+# NOT a billing source of truth — real cost comes from LiteLLM's `_response_cost`
+# on the actual call (see `complete`). Keyed by substring so it survives provider
+# prefixes / minor version bumps. Unknown models → unpriced → savings is None.
+_APPROX_USD_PER_MTOK: dict[str, float] = {
+    "opus": 15.0,
+    "sonnet": 3.0,
+    "haiku": 0.80,
+    "gpt-5": 5.0,
+    "gpt-4o-mini": 0.15,
+    "gpt-4o": 2.50,
+    "o4-mini": 1.10,
+}
+
+# Approximate per-task token volume (in + out) for the savings estimate. A flat
+# constant keeps this scaffolding honest about its precision — it's a relative
+# baseline-vs-chosen delta, not a real usage measurement.
+_APPROX_TASK_TOKENS = 20_000
+
+
+def _usd_per_mtok(model_id: str) -> float | None:
+    """Approximate $/Mtok for a model id via substring match; None if unknown."""
+    lowered = model_id.lower()
+    for needle, price in _APPROX_USD_PER_MTOK.items():
+        if needle in lowered:
+            return price
+    return None
+
+
+def _estimate_savings_usd(
+    *, baseline: ModelConfig, chosen: ModelConfig, task: object
+) -> float | None:
+    """Estimate $ saved by routing to ``chosen`` instead of ``baseline``.
+
+    SIMPLE on purpose (execution plan SR-3 — observability scaffolding, not a
+    cost model): (baseline $/Mtok − chosen $/Mtok) × approx token volume. Returns
+    ``None`` when either model is unpriced so the event records "not computable"
+    rather than a fabricated number. Same model ⇒ 0.0 (a real, meaningful zero).
+    """
+    base_price = _usd_per_mtok(baseline.model)
+    chosen_price = _usd_per_mtok(chosen.model)
+    if base_price is None or chosen_price is None:
+        return None
+    return (base_price - chosen_price) * (_APPROX_TASK_TOKENS / 1_000_000)
 
 
 # Roles that MUST run on a different provider than Coder. This is the dynamic
@@ -312,6 +379,9 @@ class ModelRouter:
         judge: JudgeFn | None = None,
         profile: object | None = None,
         previous_tier: str | None = None,
+        event_log: RouteEventLog | None = None,
+        mission_id: str | None = None,
+        task_id: str | None = None,
     ) -> ModelConfig:
         """Resolve the model for a role, optionally applying a complexity tier.
 
@@ -378,6 +448,16 @@ class ModelRouter:
         override = decision.model_override
         if override is None:
             # `complex` (or any tier without a configured model) → primary as-is.
+            self._log_route_decision(
+                event_log,
+                mission_id=mission_id,
+                task_id=task_id,
+                role=role,
+                tier=str(decision.tier),
+                chosen=compliant_primary,
+                baseline=compliant_primary,
+                task=task,
+            )
             return compliant_primary
 
         # CRITICAL §1.5: the tier override is subject to the SAME constraints as
@@ -395,13 +475,68 @@ class ModelRouter:
                 sorted(forbidden),
                 compliant_primary.model,
             )
+            self._log_route_decision(
+                event_log,
+                mission_id=mission_id,
+                task_id=task_id,
+                role=role,
+                tier=str(decision.tier),
+                chosen=compliant_primary,
+                baseline=compliant_primary,
+                task=task,
+            )
             return compliant_primary
 
-        return ModelConfig(
+        chosen = ModelConfig(
             model=override.model,
             temperature=override.temperature,
             max_tokens=override.max_tokens,
         )
+        self._log_route_decision(
+            event_log,
+            mission_id=mission_id,
+            task_id=task_id,
+            role=role,
+            tier=str(decision.tier),
+            chosen=chosen,
+            baseline=compliant_primary,
+            task=task,
+        )
+        return chosen
+
+    def _log_route_decision(
+        self,
+        event_log: RouteEventLog | None,
+        *,
+        mission_id: str | None,
+        task_id: str | None,
+        role: str,
+        tier: str,
+        chosen: ModelConfig,
+        baseline: ModelConfig,
+        task: object,
+    ) -> None:
+        """Emit one ROUTE_DECISION event for an enabled-path resolution.
+
+        No-ops when no ``event_log``/``mission_id`` is supplied (e.g. the SR-2
+        smoke path or tests that don't care about observability), so wiring is
+        opt-in and the disabled path stays silent. Any failure here is swallowed
+        — observability must never break model resolution.
+        """
+        if event_log is None or mission_id is None:
+            return
+        try:
+            saved = _estimate_savings_usd(baseline=baseline, chosen=chosen, task=task)
+            event_log.log_route_decision(
+                mission_id=mission_id,
+                task_id=task_id,
+                tier=tier,
+                model=chosen.model,
+                saved_vs_baseline_usd=saved,
+                actor=role,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to log route decision for role=%s: %r", role, e)
 
     # -- Async completion --------------------------------------------------
 

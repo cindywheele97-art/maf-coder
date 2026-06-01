@@ -88,6 +88,9 @@ class EventKind(str, Enum):
     # Phase D §D4 — validator conflict arbitration decision (review vs behavior)
     VALIDATOR_ARBITRATION = "validator_arbitration"
 
+    # Smart Router (SR-3) — one event per tier-routed model resolution
+    ROUTE_DECISION = "route_decision"
+
 
 # ---------------------------------------------------------------------------
 # Event schema
@@ -541,6 +544,40 @@ class EventLog:
                     "status_code": status_code,
                     "bytes_received": bytes_received,
                     "blocked_reason": blocked_reason,
+                },
+            )
+        )
+
+    def log_route_decision(
+        self,
+        *,
+        mission_id: str,
+        task_id: str | None,
+        tier: str,
+        model: str,
+        saved_vs_baseline_usd: float | None = None,
+        actor: str | None = None,
+    ) -> None:
+        """Smart Router (SR-3) — record one tier-routed model resolution.
+
+        Emitted ONLY on the smart-router-enabled path of ``resolve_model``; the
+        disabled path emits nothing so existing routing stays byte-identical.
+
+        ``saved_vs_baseline_usd`` is observability scaffolding: the estimated
+        $ saved by routing this task to ``model`` instead of the role's baseline
+        primary. ``None`` when not computable (no per-model cost table yet).
+        """
+        self.append(
+            Event(
+                kind=EventKind.ROUTE_DECISION.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=task_id,
+                actor=actor,
+                payload={
+                    "tier": tier,
+                    "model": model,
+                    "saved_vs_baseline_usd": saved_vs_baseline_usd,
                 },
             )
         )
