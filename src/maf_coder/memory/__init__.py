@@ -13,6 +13,7 @@ Public API is re-exported here so callers do `from maf_coder.memory import ...`.
 
 from __future__ import annotations
 
+from .injection import retrieve_memory_block
 from .retrieval import (
     Embedder,
     RetrievalResult,
@@ -34,4 +35,5 @@ __all__ = [
     "render_results",
     "render_retro_markdown",
     "retrieve",
+    "retrieve_memory_block",
 ]

@@ -17,9 +17,9 @@ import pytest
 
 from maf_coder.agents.base import TaskContext
 from maf_coder.agents.errors import PermissionDeniedError
-from maf_coder.agents.orchestrator import _retrieve_memory_block
 from maf_coder.agents.tools.orchestrator_tools import make_save_retro
 from maf_coder.blackboard import ArtifactStore
+from maf_coder.memory import retrieve_memory_block
 from maf_coder.memory.paths import open_project_memory
 from maf_coder.models.router import ModelRouter
 from maf_coder.schemas import (
@@ -129,7 +129,7 @@ async def test_saved_retro_is_injected_into_next_orchestrator_message(
     )
     # A later mission task whose goal overlaps the lesson should surface it.
     next_ctx = _ctx(store, router, Role.ORCHESTRATOR, goal="lock validation contract for new feature")
-    block = _retrieve_memory_block(next_ctx)
+    block = retrieve_memory_block(next_ctx.store, next_ctx.task.goal)
     assert "<historical_lesson" in block
     assert "NON-BINDING" in block
     assert "lock the validation contract" in block
@@ -138,4 +138,4 @@ async def test_saved_retro_is_injected_into_next_orchestrator_message(
 def test_retrieval_injection_cold_start_safe(store: ArtifactStore, router: ModelRouter) -> None:
     # No memory db has ever been written for this repo -> empty block, no crash.
     ctx = _ctx(store, router, Role.ORCHESTRATOR, goal="brand new mission")
-    assert _retrieve_memory_block(ctx) == ""
+    assert retrieve_memory_block(ctx.store, ctx.task.goal) == ""

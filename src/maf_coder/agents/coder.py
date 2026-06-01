@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..memory import retrieve_memory_block
 from ..schemas import Role
 from .base import BaseAgent, TaskContext
 from .tools.coder_tools import build_coder_tools
@@ -82,6 +83,11 @@ class CoderWorkerAgent(BaseAgent[CoderRunSummary]):
             "4. Save patch via `save_patch`. Save test report via `save_test_report`.",
             "5. Final message: one paragraph summarizing what you did and where to find it.",
         ]
+        # Phase F — F-memory: prior handoffs for similar work as NON-binding
+        # context. Cold-start safe: no db / any error ⇒ nothing appended.
+        memory_block = retrieve_memory_block(ctx.store, task.goal, kind="handoff")
+        if memory_block:
+            lines += ["", memory_block]
         return "\n".join(lines)
 
     def parse_output(self, raw_output: str, ctx: TaskContext) -> CoderRunSummary:

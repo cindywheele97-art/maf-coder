@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..memory import retrieve_memory_block
 from ..schemas import Role
 from .base import BaseAgent, TaskContext
 from .tools.research_tools import build_research_tools
@@ -87,6 +88,11 @@ class ResearchWorkerAgent(BaseAgent[ResearchRunSummary]):
             "3. Hard cap 200 lines per note. Split if longer.",
             "4. Final message: list artifacts saved + the single most important fact for the Coder.",
         ]
+        # Phase F — F-memory: prior-mission lessons on this topic as NON-binding
+        # context. Cold-start safe: no db / any error ⇒ nothing appended.
+        memory_block = retrieve_memory_block(ctx.store, task.goal)
+        if memory_block:
+            lines += ["", memory_block]
         return "\n".join(lines)
 
     def parse_output(self, raw_output: str, ctx: TaskContext) -> ResearchRunSummary:
