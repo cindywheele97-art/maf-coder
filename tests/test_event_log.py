@@ -264,3 +264,45 @@ class TestDirectAppend:
         events = list(log.filter_kind("custom_phase_a_marker"))
         assert len(events) == 1
         assert events[0].payload["phase"] == "A"
+
+
+# ---------------------------------------------------------------------------
+# SR-3 — Smart Router route-decision event
+# ---------------------------------------------------------------------------
+
+
+class TestRouteDecisionEvent:
+    def test_appends_well_formed_event_that_roundtrips(self, log: EventLog) -> None:
+        # WHY: the route decision must survive disk round-trip with its tier +
+        # model + savings intact — that's the entire observability contract SR-3
+        # exists for (mission stats --routing reads these back).
+        log.log_route_decision(
+            mission_id="m1",
+            task_id="t1",
+            tier="reasoning",
+            model="anthropic/claude-opus-4-7",
+            saved_vs_baseline_usd=-0.24,
+            actor="coder_worker",
+        )
+        events = list(log.filter_kind(EventKind.ROUTE_DECISION))
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.kind == EventKind.ROUTE_DECISION.value
+        assert ev.task_id == "t1"
+        assert ev.actor == "coder_worker"
+        assert ev.payload["tier"] == "reasoning"
+        assert ev.payload["model"] == "anthropic/claude-opus-4-7"
+        assert ev.payload["saved_vs_baseline_usd"] == pytest.approx(-0.24)
+
+    def test_savings_none_when_not_computable(self, log: EventLog) -> None:
+        # WHY: "not computable" (no cost table) must be recorded as null, not a
+        # fabricated zero — downstream sums must be able to distinguish them.
+        log.log_route_decision(
+            mission_id="m1",
+            task_id=None,
+            tier="medium",
+            model="anthropic/claude-sonnet-4-6",
+        )
+        ev = next(iter(log.filter_kind(EventKind.ROUTE_DECISION)))
+        assert ev.payload["saved_vs_baseline_usd"] is None
+        assert ev.task_id is None
