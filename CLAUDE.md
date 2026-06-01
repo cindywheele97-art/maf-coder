@@ -4,7 +4,7 @@ This file is loaded by Claude Code at the start of every session for this projec
 
 ## What this project is
 
-**MAF-Coder** is a multi-agent framework for autonomous Rust coding missions. Phases A, B, and C are complete; Phase D is in progress. See `MAF-Coder_v2_Build_Plan.md` for the roadmap and `agent_team_soul_v3.1.md` for the framework's organizational constitution.
+**MAF-Coder** is a multi-agent framework for autonomous Rust coding missions. Phases A–F are code-complete (plus the Smart Router track and the G3 metrics harness); Phase G is real-world validation, run by the human operator. See `MAF-Coder_v2_Build_Plan.md` for the roadmap and `agent_team_soul_v3.1.md` for the framework's organizational constitution.
 
 **Meta-context that's easy to confuse**: this is a Python project that *builds* agents which *operate on Rust codebases*. When you're working in this repo, you're writing **Python** (orchestrator, workers, validators, schemas). The Rust-specific knowledge in `prompts/coder_worker.md` and `prompts/review_validator.md` is content that future agents will read — not your working environment.
 
