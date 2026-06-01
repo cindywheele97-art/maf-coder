@@ -556,6 +556,72 @@ def make_get_budget_status(ctx: TaskContext) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# save_retro  (Phase F — F-memory; additive, grouped for clean merge)
+# ---------------------------------------------------------------------------
+
+
+def make_save_retro(ctx: TaskContext) -> Any:
+    @function_tool
+    async def save_retro(
+        goal: str,
+        what_worked: list[str] | None = None,
+        what_failed: list[str] | None = None,
+        surprises: list[str] | None = None,
+        global_lessons: list[str] | None = None,
+        modules: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Assemble + persist the mission retro into cross-mission memory.
+
+        Drafts a RetroEntry from the EventLog plus the supplied narrative,
+        writes mission_retro.md to the blackboard, and ingests the retro into
+        the per-repo ProjectMemory (global_lessons promoted to GlobalLessons).
+        Orchestrator-only.
+        """
+        _require_orchestrator(ctx, "save_retro")
+        check_tool_allowed(ctx.task.permission, "save_retro")
+
+        # Lazy import keeps the memory package off the hot import path and
+        # avoids any import cycle through agents/.
+        from ...memory import assemble_retro, ingest_retro, render_retro_markdown
+        from ...memory.paths import open_global_lessons, open_project_memory
+
+        entry = assemble_retro(
+            mission_id=ctx.mission_id,
+            goal=goal,
+            event_log=ctx.event_log,
+            extra_worked=what_worked or [],
+            extra_failed=what_failed or [],
+            extra_surprises=surprises or [],
+            global_lessons=global_lessons or [],
+            modules=modules or [],
+        )
+        ctx.store.write_text("mission_retro.md", render_retro_markdown(entry))
+
+        memory = open_project_memory(ctx.store)
+        global_store = open_global_lessons(ctx.store)
+        try:
+            records = ingest_retro(entry, memory, global_lessons=global_store)
+        finally:
+            memory.close()
+            global_store.close()
+
+        record_tool_call(ctx, "save_retro", f"goal={goal[:50]} records={len(records)}")
+        ctx.event_log.log_artifact_written(
+            mission_id=ctx.mission_id,
+            actor="orchestrator",
+            path="mission_retro.md",
+            task_id=ctx.task.task_id,
+        )
+        return {
+            "mission_id": ctx.mission_id,
+            "records_ingested": len(records),
+            "global_lessons": len(entry.global_lessons),
+        }
+
+    return save_retro
+
+
+# ---------------------------------------------------------------------------
 # Factory entry
 # ---------------------------------------------------------------------------
 
@@ -575,6 +641,8 @@ def build_orchestrator_tools(
         make_get_mission_state(ctx),
         make_update_mission_state(ctx),
         make_get_budget_status(ctx),
+        # Phase F — F-memory (additive, grouped for clean merge)
+        make_save_retro(ctx),
     ]
 
 
@@ -590,5 +658,7 @@ __all__ = [
     "make_poll_user_messages",
     "make_read_artifact",
     "make_save_artifact",
+    # Phase F — F-memory (additive, grouped for clean merge)
+    "make_save_retro",
     "make_update_mission_state",
 ]
