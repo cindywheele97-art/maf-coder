@@ -73,7 +73,9 @@ What remains for Phase D/E/F Build Plan exit criteria (acceptance, not code) —
 
 The Build Plan §Phase D/E/F exit criteria are the source of truth for "done". Remaining phase is **G (real-world validation)** — largely acceptance (7-day mission, multi-project rotation). Its one code deliverable, the **G3 health-metric baseline harness, is complete** (`metrics/` + `maf-coder metrics` — first-pass / final-pass / cost / wall-clock / human-intervention / routing-savings, derived from each mission's `events.jsonl` + `mission_state.json`; PR-review pass rate is the one human-annotated input). See `docs/MAF_CODER_EXECUTION_PLAN.md §7`.
 
-Memory-retrieval injection is wired into all three first-message builders — Orchestrator, Research, and Coder (the Coder filters to prior `handoff` records) — via the shared cold-start-safe `memory.retrieve_memory_block(store, query)` helper. The one honest follow-up remaining is live-mission acceptance for D/E/F above.
+Memory-retrieval injection is wired into all three first-message builders — Orchestrator, Research, and Coder (the Coder filters to prior `handoff` records) — via the shared cold-start-safe `memory.retrieve_memory_block(store, query)` helper.
+
+Real-mode mission bootstrap is now wired: `MissionDriver.start()` seeds one `Role.ORCHESTRATOR` task (`_orchestrator_bootstrap_task()`), so `maf-coder mission new --no-dry-run` actually runs the Orchestrator → plans → dispatches the DAG (previously a no-op). The remaining work is the **live shakedown run** itself (real Rust repo + API keys) — see `docs/FIRST_RUN_RUNBOOK.md`. Open follow-ups noted there: Docker sandbox not yet CLI-wired, single Orchestrator turn (no milestone re-invocation yet), and `coder_provider_in_use` not threaded from the CLI.
 
 ## Implementation reading order (any phase)
 

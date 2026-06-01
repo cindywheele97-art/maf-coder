@@ -7,37 +7,27 @@
 
 ---
 
-## 0. ⚠️ Blocking gap you must close first
+## 0. ✅ Orchestrator bootstrap (now wired)
 
-**`maf-coder mission new --no-dry-run` currently does nothing.** In
-`orchestrator/mission_driver.py::start()` the real-mode branch builds the
-Scheduler and calls `scheduler.run()` — but **nothing seeds an initial
-Orchestrator task**, and the Orchestrator agent is never invoked. The comment
-there still reads *"Real-mode planning + execution would happen here."* With an
-empty DAG, `scheduler.run()` returns immediately and the mission finalizes
-`"complete"` having done zero work.
+Real-mode `start()` now **seeds one `Role.ORCHESTRATOR` task** (`task_id="orchestrate"`,
+goal = `config.goal`) via `scheduler.add_task(...)` before the scheduler loop
+(`mission_driver._orchestrator_bootstrap_task()`). When it runs, the Orchestrator
+plans, locks `validation_contract.yaml`, and dispatches the worker/validator DAG
+via `dispatch_task` — which extends the same loop. So `--no-dry-run` now actually
+runs the mission instead of no-op'ing. Covered by
+`tests/orchestrator/test_mission_driver.py::test_real_mode_seeds_and_runs_orchestrator`
+(stub Orchestrator, no LLM).
 
-Everything downstream is wired and unit-tested — Coder, Validators, Research,
-Security, memory, budget, checkpoints — but they only fire when a task is
-**dispatched**. The one missing link is the top-level bootstrap: *run the
-Orchestrator so it plans, locks `validation_contract.yaml`, and dispatches the
-first Coder/Validator tasks.*
+Still optional (not blocking a first run): `MissionConfig.coder_provider_in_use`
+is `None` from the CLI, so only the *static* `forbidden_providers: [anthropic]`
+half of the 异-provider rule is active (which already protects validators). Wiring
+the Coder's provider through would also engage the dynamic half — a small follow-up.
 
-**What needs building (small, ~1 task):**
-- In real-mode `start()`, before/within the scheduler loop, **seed one
-  `Role.ORCHESTRATOR` task** (goal = `config.goal`) via `scheduler.add_task(...)`.
-  The Orchestrator agent (already constructed, already `attach_scheduler`'d) will
-  run, call `dispatch_task` to build the DAG, lock the contract, and the existing
-  loop takes over.
-- Decide the bootstrap Task's `permission` / `budget` (the Orchestrator is
-  in-process + read/dispatch only — narrow permission, generous-ish budget).
-- Likely also set `MissionConfig.coder_provider_in_use` from the Coder's
-  configured provider (`anthropic` per `droid_whispering.yaml`) so the *dynamic*
-  half of the 异-provider rule engages. (The *static* `forbidden_providers:
-  [anthropic]` on validators already protects you even if this stays `None`.)
-
-Until this lands, do **§3 (works today)** only. §5+ require this step.
-*(Ask and I'll implement it — it's the final integration seam.)*
+> Caveat for run #1: the bootstrap seeds exactly one Orchestrator turn. It lays
+> out the initial DAG up-front (as in `WORKED_EXAMPLE.md`). Re-invoking the
+> Orchestrator at later milestone boundaries (for multi-milestone missions) is a
+> future enhancement; a single-milestone task like the one below exercises the
+> full Coder → Review → Behavior chain end to end.
 
 ---
 
@@ -113,11 +103,9 @@ useful addition — ask if you want it.)
 
 ---
 
-## 4. Close the gap (§0), then proceed
+## 4. (Done) Bootstrap is wired
 
-Implement the Orchestrator-seed step from §0 and re-run the suite
-(`pytest && ruff check src tests && mypy src/maf_coder`, plus a new test that the
-seeded task actually dispatches). Only then is §5 meaningful.
+§0 is implemented and tested — no action needed here. Proceed to §5.
 
 ---
 
@@ -189,7 +177,9 @@ maf-coder metrics --markdown
 
 ## Known gaps this run will expose (track them)
 
-- **§0 Orchestrator seed** — must build first (no autonomous loop without it).
+- **Single Orchestrator turn** — the seed runs the Orchestrator once (lays out the
+  initial DAG); milestone-boundary re-invocation for multi-milestone missions is a
+  future enhancement.
 - **Docker sandbox not CLI-wired** — first runs use the unisolated host sandbox.
 - **`save_retro` / `create_pr` are Orchestrator *tools*** — they fire only if the
   Orchestrator's prompt/plan actually calls them at mission end; verify it does,
