@@ -120,3 +120,12 @@ class MissionState(BaseModel):
         default=None,
         description="Tracks Orchestrator polling of user_messages/ inbox.",
     )
+    budget_mode: str = Field(
+        default="normal",
+        description=(
+            "Budget enforcement mode set by the budget guard (E5). "
+            "'normal' | 'cost_conscious' (80% band: fewer parallel / cheaper "
+            "model / fewer retries) | 'paused' (100%+ band: scheduler stops "
+            "launching NEW tasks). Default 'normal' preserves backward compat."
+        ),
+    )

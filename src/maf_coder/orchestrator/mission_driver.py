@@ -31,6 +31,7 @@ from ..blackboard import ArtifactStore
 from ..models import ModelRouter
 from ..sandbox import LocalShellSandbox, SandboxClient
 from ..schemas import Checkpoint, MissionState, Role
+from .budget import make_budget_guard
 from .checkpoint_store import CheckpointStore
 from .project_profiler import profile_project
 from .scheduler import Scheduler
@@ -121,6 +122,10 @@ class MissionDriver:
             started_at=self._started_at or datetime.now(UTC),
             tick_interval_sec=self.config.supervisor_tick_sec,
         )
+        # E-guard (Phase E §E5): budget guard hook — bands at 50/80/100/150%,
+        # sets mission_state.budget_mode, scheduler honors "paused". Marked for
+        # clean merge with E-comms (which adds its own register lines here).
+        supervisor.register(make_budget_guard())
         sup_task = asyncio.create_task(supervisor.run(stop_event))
         try:
             try:
