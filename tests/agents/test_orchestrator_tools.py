@@ -17,6 +17,7 @@ from maf_coder.agents.errors import (
 from maf_coder.agents.results import TaskHandle
 from maf_coder.agents.tools.orchestrator_tools import (
     build_orchestrator_tools,
+    make_create_pr,
     make_dispatch_task,
     make_emit_event,
     make_escalate_to_human_gate,
@@ -374,5 +375,84 @@ def test_factory_list_completeness(store, router) -> None:
         "get_mission_state",
         "update_mission_state",
         "get_budget_status",
+        "create_pr",  # F-pr
     ):
         assert n in names, f"missing orch tool: {n}"
+
+
+# ---------------------------------------------------------------------------
+# create_pr  (F-pr: PR workflow)
+# ---------------------------------------------------------------------------
+
+
+class _PrStubSandbox:
+    """Records exec calls; returns gitleaks-clean + a canned PR URL."""
+
+    def __init__(self, *, dirty: bool = False) -> None:
+        self.dirty = dirty
+        self.calls: list[str] = []
+
+    async def exec(self, cmd: str, *, cwd: str = "/workspace", timeout_sec: int = 60):
+        from maf_coder.agents.results import CommandResult
+
+        self.calls.append(cmd)
+        if "gitleaks" in cmd:
+            if self.dirty:
+                import json as _json
+
+                payload = _json.dumps([{"File": "src/main.rs", "Description": "key"}])
+                return CommandResult(
+                    command=cmd, exit_code=1, stdout=payload, stderr="", duration_sec=0.0
+                )
+            return CommandResult(command=cmd, exit_code=0, stdout="[]", stderr="", duration_sec=0.0)
+        return CommandResult(
+            command=cmd,
+            exit_code=0,
+            stdout="https://github.com/acme/widget/pull/9",
+            stderr="",
+            duration_sec=0.0,
+        )
+
+
+class TestCreatePrTool:
+    @pytest.mark.asyncio
+    async def test_happy_path_creates_pr(self, store, router) -> None:
+        store.write_text("plan.md", "# Goal\n")
+        sandbox = _PrStubSandbox()
+        ctx = _orch_ctx(store, router, sandbox)
+        result = await make_create_pr(ctx)(
+            repo_path="/workspace", head_branch="feature/x"
+        )
+        assert result["created"] is True
+        assert result["url"] == "https://github.com/acme/widget/pull/9"
+        assert result["refused"] is False
+        assert any(c.startswith("gh pr create") for c in sandbox.calls)
+        assert "create_pr" in ctx.tools_invoked
+
+    @pytest.mark.asyncio
+    async def test_dirty_refuses(self, store, router) -> None:
+        sandbox = _PrStubSandbox(dirty=True)
+        ctx = _orch_ctx(store, router, sandbox)
+        result = await make_create_pr(ctx)(
+            repo_path="/workspace", head_branch="feature/x"
+        )
+        assert result["created"] is False
+        assert result["refused"] is True
+        assert len(result["gitleaks_findings"]) == 1
+        assert not any(c.startswith("gh pr create") for c in sandbox.calls)
+
+    @pytest.mark.asyncio
+    async def test_non_orchestrator_denied(self, store, router) -> None:
+        sandbox = _PrStubSandbox()
+        ctx = _coder_ctx(store, router, sandbox)
+        with pytest.raises(PermissionDeniedError):
+            await make_create_pr(ctx)(repo_path="/workspace", head_branch="feature/x")
+
+    @pytest.mark.asyncio
+    async def test_invalid_provider(self, store, router) -> None:
+        sandbox = _PrStubSandbox()
+        ctx = _orch_ctx(store, router, sandbox)
+        with pytest.raises(ArtifactError):
+            await make_create_pr(ctx)(
+                repo_path="/workspace", head_branch="feature/x", provider="bitbucket"
+            )
