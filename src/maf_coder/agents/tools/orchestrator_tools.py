@@ -432,23 +432,19 @@ def make_poll_user_messages(ctx: TaskContext) -> Any:
         """Return unprocessed user messages, urgent first."""
         _require_orchestrator(ctx, "poll_user_messages")
         check_tool_allowed(ctx.task.permission, "poll_user_messages")
-        entries: list[dict[str, Any]] = []
-        for p in ctx.store.list_dir("user_messages"):
-            if not p.is_file() or not p.name.endswith(".md"):
-                continue
-            if p.name.startswith("_pending_"):
-                continue
-            urgent = p.name.startswith("!urgent")
-            entries.append(
-                {
-                    "filename": p.name,
-                    "path": f"user_messages/{p.name}",
-                    "content": p.read_text(encoding="utf-8"),
-                    "urgent": urgent,
-                    "created_at": datetime.fromtimestamp(p.stat().st_mtime, tz=UTC).isoformat(),
-                }
-            )
-        entries.sort(key=lambda e: (not e["urgent"], e["created_at"]))
+        # Single source of truth for inbox read/parse lives in orchestrator.inbox.
+        from ...orchestrator.inbox import read_inbox_entries
+
+        entries = [
+            {
+                "filename": e.filename,
+                "path": e.path,
+                "content": e.content,
+                "urgent": e.urgent,
+                "created_at": e.created_at,
+            }
+            for e in read_inbox_entries(ctx.store)
+        ]
         record_tool_call(ctx, "poll_user_messages", f"count={len(entries)}")
         return entries
 
@@ -461,23 +457,15 @@ def make_mark_user_message_processed(ctx: TaskContext) -> Any:
         """Move user_messages/<filename> -> processed_messages/<filename>."""
         _require_orchestrator(ctx, "mark_user_message_processed")
         check_tool_allowed(ctx.task.permission, "mark_user_message_processed")
-        src = f"user_messages/{filename}"
-        if not ctx.store.exists(src):
-            raise ArtifactError(f"mark_user_message_processed: {src}: not found")
-        content = ctx.store.read_text(src)
-        ctx.store.write_text(f"processed_messages/{filename}", content)
-        # Delete original
+        # Single source of truth for archive logic lives in orchestrator.inbox.
+        from ...orchestrator.inbox import archive_message
+
         try:
-            (ctx.store.mission_dir / "user_messages" / filename).unlink()
+            archive_message(ctx.store, filename)
+        except FileNotFoundError as e:
+            raise ArtifactError(f"mark_user_message_processed: {e}") from e
         except OSError as e:
-            raise ArtifactError(f"mark_user_message_processed: unlink {src}: {e}") from e
-        # Update mission_state.last_user_message_processed_at
-        try:
-            ms = ctx.store.load_mission_state()
-            ms.last_user_message_processed_at = datetime.now(UTC)
-            ctx.store.save_mission_state(ms)
-        except FileNotFoundError:
-            pass
+            raise ArtifactError(f"mark_user_message_processed: {e}") from e
         record_tool_call(ctx, "mark_user_message_processed", f"filename={filename}")
 
     return mark_user_message_processed

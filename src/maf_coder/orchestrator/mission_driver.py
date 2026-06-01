@@ -16,7 +16,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +33,11 @@ from ..sandbox import LocalShellSandbox, SandboxClient
 from ..schemas import Checkpoint, MissionState, Role
 from .budget import make_budget_guard
 from .checkpoint_store import CheckpointStore
+from .inbox import make_inbox_poll_hook
 from .project_profiler import profile_project
+from .push import NullPushAdapter, PushAdapter
 from .scheduler import Scheduler
+from .status_report import DEFAULT_STATUS_INTERVAL, make_status_report_hook
 from .supervisor import MissionSupervisor
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,10 @@ class MissionConfig:
     dry_run: bool = False
     coder_provider_in_use: str | None = None
     supervisor_tick_sec: float = 60.0
+    # Phase E E-comms: status-report cadence + out-of-band push adapter (default
+    # Null = rely on the rendered status_<n>.md/.json on disk).
+    status_report_interval: timedelta = DEFAULT_STATUS_INTERVAL
+    push_adapter: PushAdapter = field(default_factory=NullPushAdapter)
 
 
 class MissionDriver:
@@ -122,10 +129,19 @@ class MissionDriver:
             started_at=self._started_at or datetime.now(UTC),
             tick_interval_sec=self.config.supervisor_tick_sec,
         )
-        # E-guard (Phase E §E5): budget guard hook — bands at 50/80/100/150%,
-        # sets mission_state.budget_mode, scheduler honors "paused". Marked for
-        # clean merge with E-comms (which adds its own register lines here).
+        # --- Phase E supervision hooks (run on both start and resume paths) ---
+        # E-guard (§E5): budget guard — bands at 50/80/100/150%, sets
+        # mission_state.budget_mode, scheduler honors "paused".
         supervisor.register(make_budget_guard())
+        # E-comms (§E2/E3): status-report timer + user-message inbox poll.
+        supervisor.register(
+            make_status_report_hook(
+                interval=self.config.status_report_interval,
+                push=self.config.push_adapter,
+            )
+        )
+        supervisor.register(make_inbox_poll_hook())
+        # --- end Phase E supervision hooks ---
         sup_task = asyncio.create_task(supervisor.run(stop_event))
         try:
             try:
