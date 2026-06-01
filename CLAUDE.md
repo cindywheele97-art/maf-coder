@@ -41,7 +41,7 @@ python scripts/smoke_test.py --dry-run  # plan check, no API calls
 
 `pytest` should always pass on `main`. If you commit while red, you've broken the bar.
 
-## Current phase: A, B, and C complete; Phase D (BehaviorValidator + dual-validator chain) in progress
+## Current phase: A–D code-complete (dual-validator chain live); Phase E (multi-day) next
 
 Phase A delivered:
 - All Pydantic schemas (`src/maf_coder/schemas/`)
@@ -60,42 +60,45 @@ Phase B delivered the BaseAgent foundation, permission layer, SandboxClient, Cod
 
 Phase C delivered the Research Worker, Security Worker, the content sanitizer, egress logging, and the parallel worker matrix.
 
-Phase D is now in progress: the BehaviorValidator and the dual-validator chain (ReviewValidator → BehaviorValidator). 294 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
+Phase D is code-complete: the BehaviorValidator (`agents/behavior.py`, `prompts/behavior_validator.md`), the 5 probe strategies + behavior tools (`validators/probes/`, `agents/tools/behavior_tools.py`), the runtime dual-validator chain gate (`orchestrator/scheduler.py` — behavior runs only after review PASS), and validator conflict arbitration (`validators/arbitration.py`). A parallel Smart Router track also landed: tier-based model selection (`models/tier_router.py`, `ModelRouter.resolve_model`) with route-decision logging, never weakening the 异-provider rule. 393 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
 
-What's NOT yet built (Phase D per `AGENT_TOOLS_SPEC.md §17`):
-- `BehaviorValidator` implementation (its schemas/scaffolding exist, but no implementation yet)
-- The 5 probe strategies
-- Validator deadlock handling
+What remains for Phase D's Build Plan exit criteria (acceptance, not code) — these need real Rust projects + API keys and are run by the human operator:
+- Behavior probes verified against a real Rust HTTP service / CLI tool / library mission
+- BehaviorValidator demonstrated catching ≥2 logic bugs that ReviewValidator missed
 
-The Build Plan §Phase D exit criteria are the source of truth for what "Phase D done" means.
+The Build Plan §Phase D exit criteria are the source of truth for what "Phase D done" means. Next code phase is **E (multi-day: checkpoint / status report / budget guard / stuck recovery)** — see `docs/MAF_CODER_EXECUTION_PLAN.md §5`.
 
-## Phase B implementation reading order
+## Implementation reading order (any phase)
 
-When working on Phase B, follow this sequence (per `AGENT_TOOLS_SPEC.md §17`):
+When implementing a phase, follow this sequence:
 
-1. Read `ARCHITECTURE.md §10` to confirm where Phase B sits in the system.
-2. Read `AGENT_TOOLS_SPEC.md §17` for the 16-step implementation order.
-3. For each step in §17:
-   - Read the relevant section of `AGENT_TOOLS_SPEC.md` for signatures (typically §2-§8 for Phase B work).
+1. Read `ARCHITECTURE.md §10` to confirm where the phase sits in the system, and `docs/MAF_CODER_EXECUTION_PLAN.md` for the current phase's per-PR breakdown.
+2. Read the relevant Build Plan phase section (`MAF-Coder_v2_Build_Plan.md §Phase X`) for scope + exit criteria.
+3. For each work item:
+   - Read the relevant section of `AGENT_TOOLS_SPEC.md` for tool/component signatures.
    - Read the relevant section of `WORKED_EXAMPLE.md` for what the output should look like (use §12 cross-reference table to find it).
    - Read the relevant Pydantic schema in `src/maf_coder/schemas/` for data shape.
    - Read the relevant prompt in `prompts/` if the work involves an agent role's behavior.
+   - Mirror the closest existing analog (e.g. a new validator mirrors `agents/review.py`; new tools mirror `agents/tools/review_tools.py`).
    - Implement + write tests.
-4. End-to-end validation: once all Phase B steps are done, exercise the full mission flow using the scenario in `WORKED_EXAMPLE.md §0` (add /version endpoint to an axum service). The artifacts you produce should approximate those shown in §1-§8.
+4. Gate before every commit: `pytest && ruff check src tests && mypy src/maf_coder`. `main` must stay green.
 
-Do NOT skip ahead to Phase C (Research Worker, Security Worker), Phase D (BehaviorValidator), Phase E (multi-day infra), or Phase F (memory). Each phase has independent exit criteria.
+Respect phase boundaries — each phase has independent exit criteria. Don't pull Phase E/F/G work into the current phase; the Build Plan and execution plan define what's in scope now.
 
 ## Where things live
 
 ```
 src/maf_coder/
 ├── schemas/      # Pydantic models — most stable layer; changes here ripple
-├── models/       # ModelRouter (LiteLLM wrapper, 异-provider constraints)
+├── models/       # ModelRouter + tier_router (LiteLLM wrapper, 异-provider constraints)
 ├── blackboard/   # ArtifactStore + EventLog — file-system substrate
-├── orchestrator/ # (empty — Phase B will create planner.py, scheduler.py, etc.)
-├── workers/      # (empty — Phase B+ will create coder.py, research.py, security.py)
-├── validators/   # (empty — Phase B will create review.py, then Phase D adds behavior.py)
-└── ...
+├── agents/       # BaseAgent + roles (coder, research, security, review, behavior,
+│                 #   orchestrator) and agents/tools/ (per-role @function_tool sets)
+├── orchestrator/ # mission_driver, scheduler (DAG + dual-validator gate), project_profiler
+├── validators/   # probes/ (5 behavior probe strategies), arbitration.py
+├── sandbox/      # LocalShellSandbox + DockerSandbox
+├── sanitizer/    # content + external-content sanitizer (Phase C)
+└── cli.py        # `maf-coder mission` entry point
 
 prompts/          # production agent system prompts; treat as code
 config/           # droid_whispering.yaml + rust_sandbox.dockerfile
@@ -124,9 +127,9 @@ Each of these has at least one test enforcing it. If you find yourself disabling
    (`schemas/handoff.py`, tested in `test_schemas.py::TestHandoffCompletenessRule`)
    This is the v3.1 rule that catches "too perfect" handoffs.
 
-2. **`ModelRouter` blocks any model whose provider matches `coder_provider_in_use` when the role is `review_validator` or `adversarial_subagent`.**
+2. **`ModelRouter` blocks any model whose provider matches `coder_provider_in_use` when the role is `review_validator`, `behavior_validator`, or `adversarial_subagent`.**
    (`models/router.py::_VALIDATOR_ROLES`, tested in `test_router.py::TestDynamicCoderConstraint`)
-   This is the 异-provider constraint protecting against shared-training-data blind spots.
+   This is the 异-provider constraint protecting against shared-training-data blind spots. Smart Router tier overrides (`resolve_model`) pass through this same check — a tier can never route a validator onto the Coder's provider.
 
 3. **`ArtifactStore.save_validation_contract` is write-once unless `allow_overwrite=True` is explicitly passed.**
    (`blackboard/artifact_store.py`, tested in `test_artifact_store.py::TestContractWriteOnce`)
