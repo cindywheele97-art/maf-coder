@@ -473,6 +473,37 @@ class EventLog:
             )
         )
 
+    def log_budget_mode_changed(
+        self,
+        *,
+        mission_id: str,
+        from_mode: str,
+        to_mode: str,
+        threshold_pct: float,
+        cost_usd: float,
+        budget_usd: float,
+    ) -> None:
+        """E5 — record a budget_mode transition (normal/cost_conscious/paused).
+
+        Emitted by the budget guard on the tick that first crosses a band so the
+        transition is idempotent (one event per band, not one per tick).
+        """
+        self.append(
+            Event(
+                kind=EventKind.BUDGET_MODE_CHANGED.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                actor="orchestrator",
+                payload={
+                    "from_mode": from_mode,
+                    "to_mode": to_mode,
+                    "threshold_pct": threshold_pct,
+                    "cost_usd": cost_usd,
+                    "budget_usd": budget_usd,
+                },
+            )
+        )
+
     def log_user_message_received(
         self,
         *,

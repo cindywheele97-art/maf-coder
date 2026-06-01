@@ -14,6 +14,7 @@ from maf_coder.models.router import ModelRouter
 from maf_coder.orchestrator.scheduler import Scheduler
 from maf_coder.sandbox import LocalShellSandbox
 from maf_coder.schemas import (
+    MissionState,
     NetworkPolicy,
     Permission,
     RiskLevel,
@@ -262,5 +263,96 @@ async def test_coder_slot_serializes(tmp_path, router, store) -> None:
         await sched.add_task(_task("t2"))
         await sched.run()
         assert peak == 1, f"coder slot violated: peak={peak}"
+    finally:
+        await sandbox.stop()
+
+
+# -- Phase E §E5 — budget pause gate ---------------------------------------
+
+
+def _save_state(store: ArtifactStore, *, budget_mode: str) -> None:
+    from datetime import UTC, datetime
+
+    store.save_mission_state(
+        MissionState(
+            mission_id=store.mission_id,
+            started_at=datetime.now(UTC),
+            budget_mode=budget_mode,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_paused_refuses_new_dispatch(tmp_path, router, store) -> None:
+    """budget_mode == 'paused' → NEW tasks are blocked, never run."""
+    _save_state(store, budget_mode="paused")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        agent = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox
+        )
+        sched = Scheduler(
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
+            agent_factory={Role.CODER_WORKER: lambda: agent},
+            mission_id=store.mission_id,
+        )
+        await sched.add_task(_task("t1"))
+        await sched.run()
+        assert sched.task_status("t1") == "blocked"
+        assert agent.calls == 0  # the agent never ran
+    finally:
+        await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_dispatches(tmp_path, router, store) -> None:
+    """budget_mode == 'normal' → tasks run as usual (pause gate is inert)."""
+    _save_state(store, budget_mode="normal")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        agent = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox
+        )
+        sched = Scheduler(
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
+            agent_factory={Role.CODER_WORKER: lambda: agent},
+            mission_id=store.mission_id,
+        )
+        await sched.add_task(_task("t1"))
+        await sched.run()
+        assert sched.task_status("t1") == "complete"
+        assert agent.calls == 1
+    finally:
+        await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_mission_state_is_not_paused(tmp_path, router, store) -> None:
+    """Missing mission_state.json → fail-open (NOT paused); task runs."""
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        agent = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox
+        )
+        sched = Scheduler(
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
+            agent_factory={Role.CODER_WORKER: lambda: agent},
+            mission_id=store.mission_id,
+        )
+        await sched.add_task(_task("t1"))
+        await sched.run()
+        assert sched.task_status("t1") == "complete"
     finally:
         await sandbox.stop()

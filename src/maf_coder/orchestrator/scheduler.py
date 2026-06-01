@@ -205,6 +205,46 @@ class Scheduler:
         )
         rec.done_event.set()
 
+    # -- Budget pause gate (Phase E §E5) -----------------------------------
+
+    def _budget_paused(self) -> bool:
+        """True iff the budget guard has driven the mission into "paused".
+
+        Read fresh from mission_state each scheduling pass so a pause set by the
+        concurrently-running budget SupervisionHook takes effect on the next
+        pass. Missing/unreadable state is treated as NOT paused (fail-open: a
+        read error must never wedge a mission that isn't actually over budget).
+        """
+        try:
+            return self.store.load_mission_state().budget_mode == "paused"
+        except Exception:
+            return False
+
+    def _block_paused_task(self, rec: _TaskRecord) -> None:
+        """Refuse to launch a NEW task while budget_mode == "paused".
+
+        Mirrors D3's `_block_behavior_task`: mark blocked, emit a single event
+        carrying the budget signal, finish the task. Already-active tasks are
+        untouched — only NEW dispatch is gated, so active work drains normally.
+        """
+        rec.state = "blocked"
+        rec.error = "blocked: budget paused — no new tasks dispatched"
+        self.event_log.append(
+            Event(
+                kind=EventKind.BUDGET_MODE_CHANGED.value,
+                mission_id=self.mission_id,
+                trace_id=self.mission_id,
+                task_id=rec.task.task_id,
+                actor="orchestrator",
+                payload={
+                    "reason": rec.error,
+                    "to_mode": "paused",
+                    "gated_dispatch": True,
+                },
+            )
+        )
+        rec.done_event.set()
+
     # -- Conflict arbitration (Phase D §D4) --------------------------------
 
     def _arbitrate_completed_behavior(self, rec: _TaskRecord) -> None:
@@ -303,9 +343,18 @@ class Scheduler:
 
         while True:
             launched_any = False
+            # Phase E §E5 — read the budget pause flag once per scheduling pass.
+            # When paused, NEW tasks are refused (blocked + event); in-flight
+            # tasks in `active_tasks` keep running and drain normally.
+            paused = self._budget_paused()
             async with self._lock:
                 for rec in self._tasks.values():
                     if not self._is_ready(rec):
+                        continue
+                    # Budget pause gate (Phase E §E5): refuse NEW dispatch while
+                    # paused. Mirrors the D3 chain-gate block style.
+                    if paused:
+                        self._block_paused_task(rec)
                         continue
                     # Dual-validator chain — runtime verdict gate (Phase D §D3,
                     # condition (b)). A behavior_validator task may only run once
