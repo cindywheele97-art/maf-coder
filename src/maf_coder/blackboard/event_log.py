@@ -85,6 +85,9 @@ class EventKind(str, Enum):
     BUDGET_ALERT = "budget_alert"
     BUDGET_MODE_CHANGED = "budget_mode_changed"
 
+    # Phase D §D4 — validator conflict arbitration decision (review vs behavior)
+    VALIDATOR_ARBITRATION = "validator_arbitration"
+
 
 # ---------------------------------------------------------------------------
 # Event schema
@@ -606,3 +609,37 @@ class EventLog:
             elif e.kind == EventKind.TASK_FAILED.value:
                 result[e.task_id] = "failed"
         return result
+
+    # -- Phase D §D4 — validator arbitration -------------------------------
+
+    def log_validator_arbitration(
+        self,
+        *,
+        mission_id: str,
+        behavior_task_id: str,
+        review_task_id: str | None,
+        decision: str,
+        signal: str | None = None,
+        risk_level: str | None = None,
+    ) -> None:
+        """Record the arbitration decision over a review+behavior verdict pair.
+
+        `signal` carries the implementation_path_issue token on the PASS+FAIL
+        re-plan row; `risk_level` carries the re-plan risk (medium). Both are
+        None on rows that don't produce a re-plan signal.
+        """
+        self.append(
+            Event(
+                kind=EventKind.VALIDATOR_ARBITRATION.value,
+                mission_id=mission_id,
+                trace_id=mission_id,
+                task_id=behavior_task_id,
+                actor="orchestrator",
+                payload={
+                    "decision": decision,
+                    "review_task_id": review_task_id,
+                    "signal": signal,
+                    "risk_level": risk_level,
+                },
+            )
+        )

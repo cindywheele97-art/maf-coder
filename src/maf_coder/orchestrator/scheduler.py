@@ -30,6 +30,12 @@ from ..blackboard.event_log import Event, EventKind, EventLog
 from ..models import ModelRouter
 from ..sandbox import SandboxClient
 from ..schemas import Role, Task, VerdictResult
+from ..validators.arbitration import (
+    IMPLEMENTATION_PATH_ISSUE_SIGNAL,
+    REPLAN_RISK_LEVEL,
+    ArbitrationDecision,
+    check_validator_preconditions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +205,71 @@ class Scheduler:
         )
         rec.done_event.set()
 
+    # -- Conflict arbitration (Phase D §D4) --------------------------------
+
+    def _arbitrate_completed_behavior(self, rec: _TaskRecord) -> None:
+        """After a behavior_validator task completes, reconcile its verdict with
+        the review verdict and record the arbitration decision (§D4 table).
+
+        Runs only on the path where the behavior task ACTUALLY executed (review
+        PASS gate satisfied → behavior produced a verdict). The blocked path
+        (review FAIL) is handled by `_block_behavior_task` in the run loop and is
+        not re-arbitrated here.
+
+        Reuses D3's `_review_dependency_id` to find the review task by owner role
+        — never by literal ID. Side effects (event / escalation) live here; the
+        decision itself is the pure `check_validator_preconditions`.
+        """
+        review_id = self._review_dependency_id(rec)
+        if review_id is None:
+            return
+        decision = check_validator_preconditions(
+            self.store,
+            review_task_id=review_id,
+            behavior_task_id=rec.task.task_id,
+        )
+
+        if decision is ArbitrationDecision.REPLAN_IMPLEMENTATION_PATH:
+            # PASS + FAIL → orchestrator re-plans; carry the stuck-recovery signal
+            # + risk=medium so the re-plan loop keys off a single token.
+            self.event_log.log_validator_arbitration(
+                mission_id=self.mission_id,
+                behavior_task_id=rec.task.task_id,
+                review_task_id=review_id,
+                decision=decision.value,
+                signal=IMPLEMENTATION_PATH_ISSUE_SIGNAL,
+                risk_level=REPLAN_RISK_LEVEL,
+            )
+        elif decision is ArbitrationDecision.HUMAN_GATE:
+            # FAIL + PASS → near-impossible contradiction; force-escalate. Reuse
+            # the existing human-gate escalation event (log_escalation), then
+            # record the arbitration decision for the audit trail.
+            self.event_log.log_escalation(
+                mission_id=self.mission_id,
+                target="human_gate",
+                reason=(
+                    "validator conflict: review FAIL but behavior PASS "
+                    f"(review_task_id={review_id})"
+                ),
+                task_id=rec.task.task_id,
+            )
+            self.event_log.log_validator_arbitration(
+                mission_id=self.mission_id,
+                behavior_task_id=rec.task.task_id,
+                review_task_id=review_id,
+                decision=decision.value,
+            )
+        elif decision is ArbitrationDecision.CHECKPOINT_CANDIDATE:
+            # PASS + PASS → lightweight checkpoint-candidate signal. Phase E builds
+            # real checkpointing; here we only flag the candidate via an event.
+            self.event_log.log_validator_arbitration(
+                mission_id=self.mission_id,
+                behavior_task_id=rec.task.task_id,
+                review_task_id=review_id,
+                decision=decision.value,
+            )
+        # BEHAVIOR_BLOCKED: behavior never ran on this path; nothing to do.
+
     # -- Wait helpers ------------------------------------------------------
 
     async def wait_for(self, task_id: str, timeout_sec: float | None = None) -> AgentResult[Any]:
@@ -345,6 +416,10 @@ class Scheduler:
                 actor=owner.value,
                 duration_sec=duration,
             )
+            # Phase D §D4 — a completed behavior_validator task now has both
+            # verdicts on disk; reconcile them and record the arbitration decision.
+            if owner is Role.BEHAVIOR_VALIDATOR:
+                self._arbitrate_completed_behavior(rec)
         rec.done_event.set()
 
 
