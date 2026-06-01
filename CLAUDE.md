@@ -41,7 +41,7 @@ python scripts/smoke_test.py --dry-run  # plan check, no API calls
 
 `pytest` should always pass on `main`. If you commit while red, you've broken the bar.
 
-## Current phase: A–D code-complete (dual-validator chain live); Phase E (multi-day) next
+## Current phase: A–E code-complete (multi-day infra live); Phase F (cross-mission memory) next
 
 Phase A delivered:
 - All Pydantic schemas (`src/maf_coder/schemas/`)
@@ -62,11 +62,13 @@ Phase C delivered the Research Worker, Security Worker, the content sanitizer, e
 
 Phase D is code-complete: the BehaviorValidator (`agents/behavior.py`, `prompts/behavior_validator.md`), the 5 probe strategies + behavior tools (`validators/probes/`, `agents/tools/behavior_tools.py`), the runtime dual-validator chain gate (`orchestrator/scheduler.py` — behavior runs only after review PASS), and validator conflict arbitration (`validators/arbitration.py`). A parallel Smart Router track also landed: tier-based model selection (`models/tier_router.py`, `ModelRouter.resolve_model`) with route-decision logging, never weakening the 异-provider rule. 393 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
 
-What remains for Phase D's Build Plan exit criteria (acceptance, not code) — these need real Rust projects + API keys and are run by the human operator:
-- Behavior probes verified against a real Rust HTTP service / CLI tool / library mission
-- BehaviorValidator demonstrated catching ≥2 logic bugs that ReviewValidator missed
+Phase E is code-complete: the concurrent `MissionSupervisor` tick loop (`orchestrator/supervisor.py`) with a hook interface, plus three hooks/subsystems built on it — status reports + push adapters + user-message inbox (`orchestrator/status_report.py`, `push.py`, `inbox.py`), the budget guard (`orchestrator/budget.py` — bands at 50/80/100/150%, `mission_state.budget_mode`, scheduler honors "paused") + stuck-recovery triage (`recovery.py`), and resume/rollback + snapshot restore/GC + CLI (`orchestrator/checkpoint_store.py`, `mission_driver.resume`/`rollback`, `sandbox.restore_snapshot`, `maf-coder resume`/`rollback`). 459 unit tests pass; live tests gated by `RUN_LIVE_TESTS=1`.
 
-The Build Plan §Phase D exit criteria are the source of truth for what "Phase D done" means. Next code phase is **E (multi-day: checkpoint / status report / budget guard / stuck recovery)** — see `docs/MAF_CODER_EXECUTION_PLAN.md §5`.
+What remains for Phase D + E Build Plan exit criteria (acceptance, not code) — these need real Rust projects + API keys and are run by the human operator:
+- Behavior probes verified against a real Rust HTTP service / CLI tool / library mission; BehaviorValidator catching ≥2 logic bugs ReviewValidator missed
+- A real 48h continuous mission exercising checkpoint-rollback-resume, a status push, an inbox injection, and an 80% budget cautious-mode switch
+
+The Build Plan §Phase D/E exit criteria are the source of truth for "done". Next code phase is **F (cross-mission memory + PR workflow)** — see `docs/MAF_CODER_EXECUTION_PLAN.md §6`.
 
 ## Implementation reading order (any phase)
 

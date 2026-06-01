@@ -643,8 +643,8 @@ If PR creation fails (auth / network / API error), the mission is NOT marked com
 | C | Research Worker, Security Worker, parallel scheduler, content sanitizer, external-content sanitizer | ✓ Complete |
 | D | BehaviorValidator + 5 probe strategies, dual-validator chain gate, conflict arbitration | ✓ Code-complete (live-mission acceptance pending) |
 | SR | Smart Router: tier-based model selection (`tier_router`, `resolve_model`), route-decision logging — parallel track | ✓ Code-complete |
-| E | Checkpoint system, Status Report timer, User Messages polling, Budget Guard, Stuck Recovery | Next |
-| F | Cross-mission memory (project + global), retrieval integration | After E |
+| E | MissionSupervisor tick loop, Checkpoint/resume/rollback, Status Report + push, User Messages inbox, Budget Guard, Stuck Recovery | ✓ Code-complete (48h live acceptance pending) |
+| F | Cross-mission memory (project + global), retrieval integration | Next |
 | G | Production hardening, multi-project validation, real 7-day missions | After F |
 
 This table is the **canonical cross-reference** between architecture and Build Plan. If a component is named here, it's covered. If not, it's out of scope.
