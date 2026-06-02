@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,6 +49,11 @@ from .status_report import DEFAULT_STATUS_INTERVAL, make_status_report_hook
 from .supervisor import MissionSupervisor
 
 logger = logging.getLogger(__name__)
+
+# Safety backstop on the per-milestone re-invocation loop. A real mission ends
+# far sooner via the Orchestrator's complete_mission signal; this only bounds a
+# pathological loop (the budget guard is the real cost ceiling).
+_MAX_MILESTONES = 50
 
 
 @dataclass
@@ -132,25 +137,101 @@ class MissionDriver:
             await self._finalize(result="dry_run_complete")
             return
 
-        # Bootstrap the mission: seed a single Orchestrator task. When it runs,
-        # the Orchestrator plans, locks validation_contract.yaml, and dispatches
-        # the worker/validator DAG via `dispatch_task` — which extends THIS same
-        # scheduler loop, so the seeded task is the only thing the driver adds.
-        scheduler = self._build_scheduler()
-        self._scheduler = scheduler
-        await scheduler.add_task(self._orchestrator_bootstrap_task())
-        await self._run_with_supervisor(scheduler, result_on_complete="complete")
+        # Drive the per-milestone loop under one long-lived supervisor. Each
+        # milestone re-invokes the Orchestrator in a fresh scheduler; the
+        # supervisor (budget/status/inbox hooks) spans the whole loop.
+        await self._run_under_supervisor(
+            self._milestone_loop, result_on_complete="complete"
+        )
 
-    async def _run_with_supervisor(
-        self, scheduler: Scheduler, *, result_on_complete: str
+    async def _milestone_loop(self) -> str:
+        """Per-milestone driver loop (re-invokes the Orchestrator each milestone).
+
+        Each iteration: advance ``current_milestone`` → re-invoke the Orchestrator
+        in a fresh scheduler (it reviews the prior milestone's verdicts, may
+        checkpoint it, then either dispatches THIS milestone's work or declares the
+        mission done) → drain the dispatched DAG → inspect the turn deterministically.
+
+        Returns an honest mission result (Rule: fail loud — a stalled/errored loop
+        must NOT report "complete"):
+          - "complete"            — Orchestrator signalled mission_complete
+          - "orchestrator_error"  — a turn errored / produced no result
+          - "stalled"             — a turn dispatched no work and didn't complete
+          - "milestone_cap_reached" — hit the _MAX_MILESTONES backstop
+        """
+        for n in range(_MAX_MILESTONES):
+            milestone_id = f"m{n}"
+            self._set_current_milestone(milestone_id)
+            scheduler = self._build_scheduler()
+            self._scheduler = scheduler
+            await scheduler.add_task(self._orchestrator_bootstrap_task(milestone_id))
+            await scheduler.run()
+
+            # After a real run the orchestrate task is terminal. If it isn't
+            # (e.g. an empty/stubbed scheduler that never executed it), do NOT
+            # block on wait_for — treat it as a turn with no usable result.
+            if scheduler.task_status("orchestrate") not in ("complete", "failed", "blocked"):
+                logger.warning(
+                    "milestone loop: orchestrate did not run to completion at %s "
+                    "(status=%s); ending",
+                    milestone_id,
+                    scheduler.task_status("orchestrate"),
+                )
+                return "orchestrator_error"
+
+            try:
+                result = await scheduler.wait_for("orchestrate")
+            except (KeyError, RuntimeError) as e:
+                logger.warning(
+                    "milestone loop: orchestrator turn %s produced no result (%r); ending",
+                    milestone_id,
+                    e,
+                )
+                return "orchestrator_error"
+            if result.errored:
+                logger.warning(
+                    "milestone loop: orchestrator turn %s errored (%s); ending",
+                    milestone_id,
+                    result.error_reason,
+                )
+                return "orchestrator_error"
+
+            if self.store.load_mission_state().mission_complete:
+                logger.info("milestone loop: mission_complete signalled at %s", milestone_id)
+                return "complete"
+            if result.tools_invoked.count("dispatch_task") == 0:
+                logger.info(
+                    "milestone loop: no work dispatched at %s and mission not complete; "
+                    "ending (nothing left to do or stalled)",
+                    milestone_id,
+                )
+                return "stalled"
+        logger.warning(
+            "milestone loop: hit _MAX_MILESTONES cap (%d); ending", _MAX_MILESTONES
+        )
+        return "milestone_cap_reached"
+
+    def _set_current_milestone(self, milestone_id: str) -> None:
+        """Advance mission_state.current_milestone (immutable copy). No-op if the
+        state file is missing or already at this milestone."""
+        try:
+            ms = self.store.load_mission_state()
+        except FileNotFoundError:
+            return
+        if ms.current_milestone == milestone_id:
+            return
+        self.store.save_mission_state(ms.model_copy(update={"current_milestone": milestone_id}))
+
+    async def _run_under_supervisor(
+        self, work: Callable[[], Awaitable[str | None]], *, result_on_complete: str
     ) -> None:
-        """Run the scheduler under a concurrent supervisor heartbeat.
+        """Run ``work`` under a concurrent supervisor heartbeat.
 
-        Shared by ``start()`` and ``resume()``. The supervisor is the Phase E
-        spine: a heartbeat tick loop that later workstreams plug hooks into. It
-        must be started before scheduler.run() and stopped on EVERY exit path
-        (complete / aborted / crashed) — and a supervisor failure must NEVER
-        change the mission result.
+        Shared by ``start()`` (work = the milestone loop) and ``resume()`` (work =
+        a single scheduler run). The supervisor is the Phase E spine: a heartbeat
+        tick loop that later workstreams plug hooks into. It must be started before
+        ``work`` and stopped on EVERY exit path (complete / aborted / crashed) — and
+        a supervisor failure must NEVER change the mission result.
         """
         stop_event = asyncio.Event()
         supervisor = MissionSupervisor(
@@ -176,7 +257,7 @@ class MissionDriver:
         sup_task = asyncio.create_task(supervisor.run(stop_event))
         try:
             try:
-                await scheduler.run()
+                outcome = await work()
             except asyncio.CancelledError:
                 logger.warning("MissionDriver: cancelled")
                 await self._finalize(result="aborted")
@@ -186,7 +267,9 @@ class MissionDriver:
                 await self._finalize(result="crashed")
                 raise
 
-            await self._finalize(result=result_on_complete)
+            # `work` may return an honest outcome (the milestone loop does); fall
+            # back to result_on_complete when it returns None (the resume path).
+            await self._finalize(result=outcome or result_on_complete)
         finally:
             await self._stop_supervisor(stop_event, sup_task)
 
@@ -244,7 +327,13 @@ class MissionDriver:
 
             scheduler = self._build_scheduler()
             self._scheduler = scheduler
-            await self._run_with_supervisor(scheduler, result_on_complete="resumed_complete")
+
+            async def _run_resumed_scheduler() -> None:
+                await scheduler.run()
+
+            await self._run_under_supervisor(
+                _run_resumed_scheduler, result_on_complete="resumed_complete"
+            )
         finally:
             await self._ensure_sandbox_stopped()
 
@@ -330,25 +419,40 @@ class MissionDriver:
         except Exception as e:
             logger.warning("MissionDriver: profile_project failed: %r", e)
 
-    def _orchestrator_bootstrap_task(self) -> Task:
-        """The single seed task that boots a real mission.
+    def _orchestrator_bootstrap_task(self, milestone_id: str = "m0") -> Task:
+        """The Orchestrator turn for one milestone (re-invoked per milestone).
 
         The Orchestrator agent runs this, then plans + locks the validation
-        contract + dispatches the worker/validator DAG via `dispatch_task`. Its
-        own task is added directly (not via `dispatch_task`), so it is not gated
-        by the contract that doesn't exist yet. `allowed_tools=[]` means "no
-        per-task tool restriction" — the agent's tool registry already scopes it.
+        contract (first turn only) + dispatches the worker/validator DAG via
+        `dispatch_task`. Its own task is added directly (not via `dispatch_task`),
+        so it is not gated by the contract that doesn't exist yet. `allowed_tools=[]`
+        means "no per-task tool restriction" — the agent's tool registry scopes it.
+
+        The Driver re-invokes this once per milestone; the turn either dispatches
+        the current milestone's work, or — once the goal is delivered — calls
+        `complete_mission` to end the loop.
         """
+        first = milestone_id == "m0"
+        background = (
+            "Mission bootstrap. The ProjectProfile and mission_state exist. "
+            "Produce plan.md, lock validation_contract.yaml, then dispatch the "
+            f"first milestone's ({milestone_id}) worker/validator DAG with "
+            "dispatch_task."
+            if first
+            else (
+                f"Milestone boundary: now at {milestone_id}. Review the previous "
+                "milestone's verdicts on disk and create_checkpoint it if it "
+                "PASSED. Then either dispatch this milestone's worker/validator "
+                "DAG with dispatch_task, OR — if the goal is fully delivered — "
+                "call complete_mission to end the mission."
+            )
+        )
         return Task(
             task_id="orchestrate",
-            parent_milestone="m0",
+            parent_milestone=milestone_id,
             owner=Role.ORCHESTRATOR,
             goal=self.config.goal,
-            background=(
-                "Mission bootstrap. The ProjectProfile and mission_state already "
-                "exist. Produce plan.md, lock validation_contract.yaml, then "
-                "dispatch the worker/validator DAG with dispatch_task."
-            ),
+            background=background,
             acceptance_criteria=[],
             required_outputs=["plan.md", "validation_contract.yaml"],
             permission=Permission(

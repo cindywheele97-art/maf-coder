@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -49,6 +50,48 @@ def _supervisor(store: ArtifactStore, **kwargs: object) -> MissionSupervisor:
         started_at=started_at,
         tick_interval_sec=float(kwargs.pop("tick_interval_sec", 0.01)),  # type: ignore[arg-type]
     )
+
+
+class _StubTurnResult:
+    """Minimal AgentResult stand-in for a completing Orchestrator turn."""
+
+    errored = False
+    error_reason = None
+    tools_invoked: ClassVar[list[str]] = []
+
+
+def _completing_orchestrator_build(driver: MissionDriver, *, delay: float = 0.05):  # type: ignore[no-untyped-def]
+    """Return a `_build_scheduler` whose scheduler runs a stub Orchestrator that
+    declares the mission complete on its first turn (after `delay` so a concurrent
+    supervisor ticks). Used to exercise the real milestone loop without an LLM."""
+    from maf_coder.orchestrator.scheduler import Scheduler
+    from maf_coder.schemas import Role
+
+    class _CompletingStub:
+        role = Role.ORCHESTRATOR
+
+        def __init__(self, store: ArtifactStore) -> None:
+            self.store = store
+
+        async def run(self, task, *, mission_id, coder_provider_in_use=None):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(delay)
+            ms = self.store.load_mission_state()
+            self.store.save_mission_state(ms.model_copy(update={"mission_complete": True}))
+            return _StubTurnResult()
+
+    def _build() -> Scheduler:
+        stub = _CompletingStub(driver.store)
+        return Scheduler(
+            store=driver.store,
+            event_log=driver.event_log,
+            router=driver.router,
+            sandbox=driver.sandbox,
+            agent_factory={Role.ORCHESTRATOR: lambda: stub},
+            mission_id=driver.mission_id,
+            coder_provider_in_use=driver.config.coder_provider_in_use,
+        )
+
+    return _build
 
 
 @pytest.mark.asyncio
@@ -204,11 +247,11 @@ def _write_router(path: Path) -> None:
 async def test_driver_runs_and_stops_supervisor_around_scheduler(
     tmp_path: Path,
 ) -> None:
-    """Real-mode start() must start the supervisor, run scheduler.run() to
+    """Real-mode start() must start the supervisor, run the milestone loop to
     completion, then stop the supervisor — and a hook error must NOT change the
-    mission outcome. We stub scheduler.run() with an empty DAG so the mission
-    completes normally, and assert the supervisor ticked at least once and the
-    mission ended 'complete'.
+    mission outcome. We use a stub Orchestrator that declares the mission complete
+    on its first turn (after a small delay so the concurrent supervisor ticks), so
+    the loop does exactly one turn and ends 'complete'.
     """
     repo = tmp_path / "repo"
     _write_repo(repo)
@@ -224,20 +267,7 @@ async def test_driver_runs_and_stops_supervisor_around_scheduler(
         supervisor_tick_sec=0.005,
     )
     driver = MissionDriver(mission_id="m-real", config=cfg)
-
-    # Empty-DAG scheduler.run() returns immediately, but we add a tiny delay so
-    # the concurrently-running supervisor gets at least one tick in.
-    async def _quick_run() -> None:
-        await asyncio.sleep(0.05)
-
-    original_build = driver._build_scheduler
-
-    def _build() -> object:
-        sched = original_build()
-        sched.run = _quick_run  # type: ignore[method-assign]
-        return sched
-
-    driver._build_scheduler = _build  # type: ignore[method-assign]
+    driver._build_scheduler = _completing_orchestrator_build(driver)  # type: ignore[method-assign]
 
     await driver.start()
 
@@ -272,18 +302,7 @@ async def test_driver_supervisor_error_does_not_change_outcome(
         supervisor_tick_sec=0.005,
     )
     driver = MissionDriver(mission_id="m-superr", config=cfg)
-
-    async def _quick_run() -> None:
-        await asyncio.sleep(0.02)
-
-    original_build = driver._build_scheduler
-
-    def _build() -> object:
-        sched = original_build()
-        sched.run = _quick_run  # type: ignore[method-assign]
-        return sched
-
-    driver._build_scheduler = _build  # type: ignore[method-assign]
+    driver._build_scheduler = _completing_orchestrator_build(driver, delay=0.02)  # type: ignore[method-assign]
 
     # Force the supervisor's run() to blow up. The mission must still complete.
     import maf_coder.orchestrator.mission_driver as md

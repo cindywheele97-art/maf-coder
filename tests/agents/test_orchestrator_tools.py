@@ -335,6 +335,19 @@ class TestMissionState:
             await make_update_mission_state(ctx)(updates={"cumulative_cost_usd": 99.0})
 
 
+class TestCompleteMission:
+    @pytest.mark.asyncio
+    async def test_sets_mission_complete_flag(self, store, router) -> None:
+        from maf_coder.agents.tools.orchestrator_tools import make_complete_mission
+
+        ctx = _orch_ctx(store, router, _StubSandbox())
+        assert store.load_mission_state().mission_complete is False
+        out = await make_complete_mission(ctx)(summary="goal delivered")
+        assert out["mission_complete"] is True
+        assert store.load_mission_state().mission_complete is True
+        assert "complete_mission" in ctx.tools_invoked
+
+
 class TestBudgetStatus:
     @pytest.mark.asyncio
     async def test_zero_when_no_calls(self, store, router) -> None:
@@ -374,6 +387,7 @@ def test_factory_list_completeness(store, router) -> None:
         "mark_user_message_processed",
         "get_mission_state",
         "update_mission_state",
+        "complete_mission",
         "get_budget_status",
         "create_pr",  # F-pr
     ):

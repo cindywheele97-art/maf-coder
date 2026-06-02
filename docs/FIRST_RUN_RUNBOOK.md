@@ -186,9 +186,12 @@ maf-coder metrics --markdown
 
 ## Known gaps this run will expose (track them)
 
-- **Single Orchestrator turn** — the seed runs the Orchestrator once (lays out the
-  initial DAG); milestone-boundary re-invocation for multi-milestone missions is a
-  future enhancement.
+- **Milestone re-invocation is wired** — the Driver re-invokes the Orchestrator
+  once per milestone (sets `current_milestone`, drains the dispatched DAG, repeats)
+  until the Orchestrator calls `complete_mission`. A turn that dispatches no work
+  and doesn't declare completion ends the loop; `_MAX_MILESTONES` (50) is the
+  backstop. Note: the Driver's milestone counter (m0, m1, …) is a turn/boundary
+  index — reconciling it with plan.md's named milestones is a future refinement.
 - **Docker sandbox is opt-in** — `mission new`/`resume` default to `--sandbox local`
   (unisolated host shell). Pass `--sandbox docker` (after `bash scripts/build_sandbox.sh`)
   for an isolated container; it fails loud if the daemon is down.
