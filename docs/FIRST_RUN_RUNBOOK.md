@@ -95,12 +95,19 @@ maf-coder mission status <mission_id>          # inspect mission_state.json
 maf-coder metrics --markdown
 ```
 
-To prove **real LLM routing + a single agent round-trip** before the full loop
-exists, run one agent directly in a Python REPL (construct an agent with the real
-`ModelRouter(config/droid_whispering.yaml)` + a `LocalShellSandbox`, build a
-`Task`, `await agent.run(task, mission_id=...)`). This confirms keys + routing +
-SDK wiring with one cheap call. (A scripted `scripts/live_smoke.py` would be a
-useful addition — ask if you want it.)
+To prove **real LLM routing + the agent stack** before spending on a full mission:
+
+```bash
+python scripts/live_smoke.py --keys-only          # which provider keys are set (no call)
+python scripts/live_smoke.py                       # one cheap real call through BaseAgent.run
+python scripts/live_smoke.py --role coder_worker --max-tokens 8
+```
+
+It runs a minimal no-tool agent end to end (`BaseAgent.run` → router model
+resolution → OpenAI Agents SDK `Runner` + `LitellmModel` → `parse_output`), so a
+failure points at the wiring, not a role's prompt/tools. Complements
+`scripts/smoke_test.py`, which validates the model layer (every model via
+LiteLLM: completion / tool-calling / JSON).
 
 ---
 

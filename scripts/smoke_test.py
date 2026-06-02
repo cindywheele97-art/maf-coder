@@ -34,7 +34,6 @@ from typing import Any
 
 import yaml
 
-
 # ----------------------------------------------------------------------------
 # Test case + result types
 # ----------------------------------------------------------------------------
@@ -202,9 +201,9 @@ async def run_one_combo(
                 result.passes += 1
             else:
                 result.failures.append(f"#{i+1}: {reason}")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             result.failures.append(f"#{i+1}: timeout after {timeout_sec}s")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             result.failures.append(f"#{i+1}: {type(e).__name__}: {e!s}")
 
     return result
