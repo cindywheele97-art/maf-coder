@@ -98,6 +98,21 @@ def read_budget_usd(event_log_budget_cfg: dict[str, object]) -> float:
     return _DEFAULT_BUDGET_USD
 
 
+def default_budget_config(total_budget_usd: float | None = None) -> dict[str, float]:
+    """Build a default budget.yaml-shaped dict for a fresh mission.
+
+    Inverse of ``read_budget_usd``: ``alert_threshold_usd`` is half the total (the
+    50% annotate band), so ``read_budget_usd(default_budget_config(x)) == x``.
+    With no argument the values equal the guard's own fallbacks, so seeding the
+    file changes nothing at runtime — it only makes the budget visible + editable.
+    """
+    total = total_budget_usd if total_budget_usd is not None else _DEFAULT_BUDGET_USD
+    return {
+        "total_budget_usd": total,
+        "alert_threshold_usd": total / _ALERT_TO_BUDGET_FACTOR,
+    }
+
+
 def classify_band(ratio: float) -> BudgetDecision:
     """Pure: map a spend/budget ratio to the highest band it has reached.
 

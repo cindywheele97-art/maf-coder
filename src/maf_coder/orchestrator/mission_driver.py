@@ -39,7 +39,7 @@ from ..schemas import (
     Task,
     TaskBudget,
 )
-from .budget import make_budget_guard
+from .budget import default_budget_config, make_budget_guard
 from .checkpoint_store import CheckpointStore
 from .inbox import make_inbox_poll_hook
 from .project_profiler import profile_project
@@ -64,6 +64,9 @@ class MissionConfig:
     )
     dry_run: bool = False
     coder_provider_in_use: str | None = None
+    # Full mission budget (USD) seeded into budget.yaml so the budget guard has an
+    # explicit ceiling from tick 1. None → the guard's default (see budget.py).
+    total_budget_usd: float | None = None
     supervisor_tick_sec: float = 60.0
     # Phase E E-comms: status-report cadence + out-of-band push adapter (default
     # Null = rely on the rendered status_<n>.md/.json on disk).
@@ -119,6 +122,8 @@ class MissionDriver:
         await self.sandbox.start(workspace_mount=self.config.repo_path)
 
         await self._initialize_state()
+
+        await self._seed_budget()
 
         await self._profile_and_save()
 
@@ -304,6 +309,17 @@ class MissionDriver:
             coder_provider_in_use=self.coder_provider_in_use,
         )
         self.store.save_mission_state(ms)
+
+    async def _seed_budget(self) -> None:
+        """Write a default budget.yaml so the budget guard has an explicit,
+        operator-editable ceiling from tick 1 — instead of relying on the
+        single-turn Orchestrator to produce one. Idempotent: never overwrites an
+        existing budget.yaml (operator-edited or carried over by a resumed run)."""
+        if self.store.exists("budget.yaml"):
+            return
+        self.store.write_yaml(
+            "budget.yaml", default_budget_config(self.config.total_budget_usd)
+        )
 
     async def _profile_and_save(self) -> None:
         if self.store.exists("project_profile.yaml"):

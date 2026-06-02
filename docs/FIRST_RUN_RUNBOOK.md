@@ -130,6 +130,7 @@ git -C /tmp/maf-target checkout -b maf/first-mission
 maf-coder mission new "add a /version endpoint returning the crate version" \
   --repo /tmp/maf-target \
   --no-dry-run \
+  --budget-usd 5 \
   --id first-real-1
 ```
 
@@ -177,7 +178,7 @@ maf-coder metrics --markdown
 
 1. **Trivial task + tiny repo** for run #1. You're testing the *machinery*, not building a feature.
 2. **Disposable `--repo`** — the Coder edits it in place via `LocalShellSandbox` (no isolation).
-3. **Set a budget** in the mission's `budget.yaml` (the budget guard escalates at 50/80/100/150% and pauses at 100%). Start with a low `total_budget_usd`.
+3. **Set a budget** with `--budget-usd` on `mission new` (or edit the auto-seeded `budget.yaml`). The budget guard escalates at 50/80/100/150% and pauses at 100%. Start low, e.g. `--budget-usd 5`.
 4. **Watch `events.jsonl` live** — kill it the moment it loops or thrashes; cost is real per LLM call.
 5. **Expect failure on run #1.** This is the first time the full loop executes against real models. Capture what breaks (the EventLog is your forensic record) and iterate.
 
@@ -192,5 +193,3 @@ maf-coder metrics --markdown
 - **`save_retro` / `create_pr` are Orchestrator *tools*** — they fire only if the
   Orchestrator's prompt/plan actually calls them at mission end; verify it does,
   or invoke `maf-coder pr` manually (above).
-- **Per-mission `budget.yaml`** isn't auto-created by `mission new` — drop one in
-  the mission dir if you want the budget guard armed on run #1.
