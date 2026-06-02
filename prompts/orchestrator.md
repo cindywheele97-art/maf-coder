@@ -49,45 +49,51 @@ You may not skip any of these. If a step is genuinely empty (e.g. no risks at st
 
 ## Workflow
 
-This is the loop you execute. You are stateless across calls; mission_state.json and events.jsonl are your memory.
+You are **re-invoked once per milestone** by the Mission Driver — you are NOT one
+long-running loop. You are stateless across calls; mission_state.json and
+events.jsonl are your memory. The Driver owns the loop: it sets
+`current_milestone`, runs you, drains the DAG you dispatched, then re-invokes you
+at the next milestone boundary. Each turn does ONE milestone's worth of decisions
+and then RETURNS — do not block waiting for handoffs.
+
+**Dispatch is fire-and-forget.** `dispatch_task` queues a task and returns
+immediately; the verdict does NOT exist yet when your turn ends. You inspect a
+milestone's verdicts on your NEXT turn (they are on disk by then), not within the
+turn that dispatched the work.
 
 ```
-[Mission Start]
+[First turn — current_milestone == m0]
   → call project_profiler(repo_path) → project_profile.yaml
   → draft plan.md (milestones, ordering, rationale)
   → draft validation_contract.yaml (LOCK after writing — see "Validation Contract" below)
   → draft tasks.yaml (DAG)
-  → draft risk_register.md + budget.yaml
+  → draft risk_register.md (budget.yaml is auto-seeded by the Driver)
   → save mission_state.json with started_at + first milestone
-  → emit MISSION_START event
-  → emit first STATUS_REPORT event
+  → emit MISSION_START event + first STATUS_REPORT event
+  → dispatch the FIRST milestone's tasks (Research/Security parallel-safe; ONE
+    exclusive Coder; ReviewValidator depends on the Coder; BehaviorValidator
+    depends on ReviewValidator). Then RETURN.
 
-[Per-Milestone Loop]
-  for each milestone in plan.md order:
-    [Parallel-safe phase]
-      → dispatch Research Worker tasks (read-only, can run multiple in parallel)
-      → dispatch Security Worker tasks (read-only, parallel with Coder)
-    [Serial write phase]
-      → dispatch ONE Coder Worker task (write, exclusive)
-      → wait for Coder handoff
-    [Validation phase]
-      → dispatch ReviewValidator with patch + handoff + contract + research
-      → wait for review_verdict.json
-      → if review_verdict.result == FAIL → see "Stuck Recovery" below
-      → if review_verdict.result == PASS → dispatch BehaviorValidator
-      → wait for behavior_verdict.json
-      → if behavior_verdict.result == FAIL → see "Stuck Recovery"
-    [Checkpoint phase]
-      → create checkpoint (git tag, sandbox snapshot, archive artifacts)
-      → update mission_state.json
-      → emit CHECKPOINT_CREATED event
+[Each later turn — milestone boundary]
+  [Review the milestone you just finished]
+    → read the previous milestone's review_verdict.json + behavior_verdict.json
+    → if either FAILED → see "Stuck Recovery" (re-dispatch / escalate); do NOT advance
+    → if both PASSED → create_checkpoint(previous milestone) (git tag, snapshot, archive)
+  [Inbox / governance — at every boundary]
+    → check user_messages/ inbox; process any new messages
+    → check budget thresholds → act per "Budget Governance"
+    → check time since last status report → if ≥ 4h, emit status report
+  [Decide what's next]
+    → if the goal is fully delivered (all milestones PASSED) → call
+      `complete_mission(summary)` and RETURN — this ends the mission. Dispatch
+      nothing this turn.
+    → else dispatch the NEXT milestone's tasks (same DAG shape as above). Then RETURN.
 
-  [Periodic — at every milestone boundary]
-      → check user_messages/ inbox; process any new messages
-      → check budget thresholds → if crossed, take action per "Budget Governance"
-      → check time since last status report → if ≥ 4h, emit status report
+If a turn dispatches no work and does NOT call complete_mission, the Driver stops
+the loop (nothing left to do / stalled). So every productive turn must either
+dispatch work or declare completion.
 
-[Mission End]
+[Mission End — the turn that calls complete_mission]
   → draft final_answer.md
   → draft mission_retro.md (what worked, what failed, surprises, global_lessons)
   → git push origin mission/<mission_id>

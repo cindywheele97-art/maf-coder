@@ -315,6 +315,10 @@ class TestTypedRoundtrips:
         assert loaded.completed_milestones == ["m1"]
         assert loaded.cumulative_cost_usd == 12.34
         assert loaded.coder_provider_in_use == "anthropic"
+        # mission_complete defaults False and round-trips when set.
+        assert loaded.mission_complete is False
+        store.save_mission_state(s.model_copy(update={"mission_complete": True}))
+        assert store.load_mission_state().mission_complete is True
 
     def test_checkpoint(self, store: ArtifactStore) -> None:
         cp = Checkpoint(

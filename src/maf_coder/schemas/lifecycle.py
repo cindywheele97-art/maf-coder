@@ -129,3 +129,12 @@ class MissionState(BaseModel):
             "launching NEW tasks). Default 'normal' preserves backward compat."
         ),
     )
+    mission_complete: bool = Field(
+        default=False,
+        description=(
+            "Terminal flag set by the Orchestrator's complete_mission tool once "
+            "the goal is fully delivered (final milestone's validators PASSED). "
+            "The Driver's per-milestone loop reads this to stop re-invoking the "
+            "Orchestrator. Default False preserves backward compat."
+        ),
+    )

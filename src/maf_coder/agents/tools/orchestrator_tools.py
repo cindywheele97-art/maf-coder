@@ -525,6 +525,29 @@ def make_update_mission_state(ctx: TaskContext) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def make_complete_mission(ctx: TaskContext) -> Any:
+    @function_tool
+    async def complete_mission(summary: str) -> dict[str, Any]:
+        """Declare the mission goal fully delivered (sets mission_complete).
+
+        Call this ONLY after the FINAL milestone's validators have PASSED (verdicts
+        on disk) and the goal is met — typically in a turn that dispatches no new
+        work. The Driver's per-milestone loop stops re-invoking the Orchestrator
+        once this flag is set; calling it prematurely ends the mission early.
+        """
+        _require_orchestrator(ctx, "complete_mission")
+        check_tool_allowed(ctx.task.permission, "complete_mission")
+        try:
+            ms = ctx.store.load_mission_state()
+        except FileNotFoundError as e:
+            raise ArtifactError("complete_mission: mission_state.json missing") from e
+        ctx.store.save_mission_state(ms.model_copy(update={"mission_complete": True}))
+        record_tool_call(ctx, "complete_mission", summary[:200])
+        return {"mission_complete": True}
+
+    return complete_mission
+
+
 def make_get_budget_status(ctx: TaskContext) -> Any:
     @function_tool
     async def get_budget_status() -> dict[str, Any]:
@@ -724,6 +747,7 @@ def build_orchestrator_tools(
         make_mark_user_message_processed(ctx),
         make_get_mission_state(ctx),
         make_update_mission_state(ctx),
+        make_complete_mission(ctx),
         make_get_budget_status(ctx),
         # Phase F — F-memory + F-pr (additive, grouped for clean merge)
         make_save_retro(ctx),
@@ -733,6 +757,7 @@ def build_orchestrator_tools(
 
 __all__ = [
     "build_orchestrator_tools",
+    "make_complete_mission",
     "make_create_checkpoint",
     "make_create_pr",  # F-pr
     "make_dispatch_task",
