@@ -189,7 +189,9 @@ maf-coder metrics --markdown
 - **Single Orchestrator turn** — the seed runs the Orchestrator once (lays out the
   initial DAG); milestone-boundary re-invocation for multi-milestone missions is a
   future enhancement.
-- **Docker sandbox not CLI-wired** — first runs use the unisolated host sandbox.
+- **Docker sandbox is opt-in** — `mission new`/`resume` default to `--sandbox local`
+  (unisolated host shell). Pass `--sandbox docker` (after `bash scripts/build_sandbox.sh`)
+  for an isolated container; it fails loud if the daemon is down.
 - **`save_retro` / `create_pr` are Orchestrator *tools*** — they fire only if the
   Orchestrator's prompt/plan actually calls them at mission end; verify it does,
   or invoke `maf-coder pr` manually (above).
