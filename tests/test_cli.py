@@ -93,6 +93,74 @@ def test_cmd_mission_new_budget_usd(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     }
 
 
+def test_build_sandbox_factory_local() -> None:
+    from maf_coder.sandbox import LocalShellSandbox
+
+    factory = cli._build_sandbox_factory("local", cli._DEFAULT_SANDBOX_IMAGE)
+    assert isinstance(factory(), LocalShellSandbox)
+
+
+def test_build_sandbox_factory_docker_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When docker is available, the factory builds a DockerSandbox with the
+    requested image (constructing it touches no daemon)."""
+    from maf_coder.sandbox import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "is_available", staticmethod(lambda: True))
+    factory = cli._build_sandbox_factory("docker", "custom:tag")
+    sb = factory()
+    assert isinstance(sb, DockerSandbox)
+    assert sb.image == "custom:tag"
+
+
+def test_build_sandbox_factory_docker_unavailable_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--sandbox docker with no daemon must raise, not silently fall back to the
+    unisolated host shell (the operator chose isolation deliberately)."""
+    from maf_coder.sandbox import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "is_available", staticmethod(lambda: False))
+    with pytest.raises(RuntimeError, match=r"Docker.*unavailable"):
+        cli._build_sandbox_factory("docker", cli._DEFAULT_SANDBOX_IMAGE)
+
+
+def test_build_sandbox_factory_unknown_value() -> None:
+    with pytest.raises(ValueError, match="unknown --sandbox"):
+        cli._build_sandbox_factory("podman", cli._DEFAULT_SANDBOX_IMAGE)
+
+
+def test_cmd_mission_new_sandbox_docker_threads_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--sandbox docker selects the DockerSandbox factory for the mission."""
+    from maf_coder.sandbox import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "is_available", staticmethod(lambda: True))
+    captured: dict[str, object] = {}
+
+    class _StubDriver:
+        def __init__(self, *, mission_id: str, config: object) -> None:
+            captured["factory"] = config.sandbox_factory  # type: ignore[attr-defined]
+
+        async def start(self) -> None:
+            return None
+
+    monkeypatch.setattr("maf_coder.orchestrator.MissionDriver", _StubDriver)
+    repo = tmp_path / "r"
+    _write_repo(repo)
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(tmp_path / "missions"))
+
+    cli.cmd_mission_new(
+        goal="demo", repo=repo, mission_id="m-dk", router_config=router,
+        dry_run=True, sandbox="docker", sandbox_image="custom:tag",
+    )
+    sb = captured["factory"]()  # type: ignore[operator]
+    assert isinstance(sb, DockerSandbox)
+    assert sb.image == "custom:tag"
+
+
 def test_cmd_mission_new_coder_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """--coder-provider flows into mission_state; omitting it derives from the
     router's coder_worker primary (anthropic in the test config)."""

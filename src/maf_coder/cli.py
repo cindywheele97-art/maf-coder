@@ -19,9 +19,17 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .sandbox import SandboxClient
 
 logger = logging.getLogger(__name__)
+
+# Default Rust sandbox image (built by `scripts/build_sandbox.sh`).
+_DEFAULT_SANDBOX_IMAGE = "maf-coder:rust-sandbox"
 
 try:
     import typer
@@ -71,6 +79,31 @@ def _default_router_config() -> Path:
     )
 
 
+def _build_sandbox_factory(sandbox: str, image: str) -> Callable[[], SandboxClient]:
+    """Map a ``--sandbox`` choice to a SandboxClient factory.
+
+    ``docker`` fails loud (no silent fallback) when docker-py/the daemon is
+    unavailable: the operator asked for isolation deliberately, so degrading to
+    the unisolated host shell would be a dangerous surprise.
+    """
+    from .sandbox import DockerSandbox, LocalShellSandbox
+
+    if sandbox == "local":
+        return lambda: LocalShellSandbox()
+    if sandbox == "docker":
+        if not DockerSandbox.is_available():
+            raise RuntimeError(
+                "Docker sandbox requested (--sandbox docker) but Docker is "
+                "unavailable. Install docker-py (`pip install docker`), ensure the "
+                "daemon is running, and build the image with "
+                "`bash scripts/build_sandbox.sh`."
+            )
+        return lambda: DockerSandbox(image=image)
+    raise ValueError(
+        f"unknown --sandbox value: {sandbox!r} (expected 'local' or 'docker')"
+    )
+
+
 def cmd_mission_new(
     *,
     goal: str,
@@ -80,6 +113,8 @@ def cmd_mission_new(
     dry_run: bool = True,
     coder_provider: str | None = None,
     budget_usd: float | None = None,
+    sandbox: str = "local",
+    sandbox_image: str = _DEFAULT_SANDBOX_IMAGE,
 ) -> dict[str, Any]:
     """Bootstrap a new mission. Returns a JSON-serializable summary.
 
@@ -89,6 +124,9 @@ def cmd_mission_new(
 
     `budget_usd` sets the full mission budget seeded into budget.yaml (the budget
     guard's ceiling). Left None, the guard's default is used.
+
+    `sandbox` selects the execution backend: "local" (host shell, no isolation)
+    or "docker" (isolated container, image `sandbox_image`).
     """
     from .orchestrator import MissionConfig, MissionDriver
 
@@ -101,6 +139,7 @@ def cmd_mission_new(
         dry_run=dry_run,
         coder_provider_in_use=coder_provider,
         total_budget_usd=budget_usd,
+        sandbox_factory=_build_sandbox_factory(sandbox, sandbox_image),
     )
     driver = MissionDriver(mission_id=mid, config=cfg)
     asyncio.run(driver.start())
@@ -175,8 +214,13 @@ def cmd_resume(
     from_milestone: str | None = None,
     router_config: Path | None = None,
     dry_run: bool = True,
+    sandbox: str = "local",
+    sandbox_image: str = _DEFAULT_SANDBOX_IMAGE,
 ) -> dict[str, Any]:
-    """Resume an existing mission from a checkpoint. JSON-serializable summary."""
+    """Resume an existing mission from a checkpoint. JSON-serializable summary.
+
+    `sandbox` must match the backend the mission ran under (see cmd_mission_new).
+    """
     from .orchestrator import MissionConfig, MissionDriver
 
     cfg = MissionConfig(
@@ -185,6 +229,7 @@ def cmd_resume(
         router_config=(router_config or _default_router_config()).resolve(),
         goal="(resume)",
         dry_run=dry_run,
+        sandbox_factory=_build_sandbox_factory(sandbox, sandbox_image),
     )
     driver = MissionDriver(mission_id=mission_id, config=cfg)
     asyncio.run(driver.resume(from_milestone=from_milestone))
@@ -394,6 +439,17 @@ if _TYPER_AVAILABLE:
             help="Full mission budget in USD, seeded into budget.yaml (the budget "
             "guard's ceiling). Default: the guard's built-in default.",
         ),
+        sandbox: str = typer.Option(
+            "local",
+            "--sandbox",
+            help="Execution backend: 'local' (host shell, no isolation) or "
+            "'docker' (isolated container).",
+        ),
+        sandbox_image: str = typer.Option(
+            _DEFAULT_SANDBOX_IMAGE,
+            "--sandbox-image",
+            help="Docker image for --sandbox docker (built by scripts/build_sandbox.sh).",
+        ),
     ) -> None:
         result = cmd_mission_new(
             goal=goal,
@@ -403,6 +459,8 @@ if _TYPER_AVAILABLE:
             dry_run=dry_run,
             coder_provider=coder_provider,
             budget_usd=budget_usd,
+            sandbox=sandbox,
+            sandbox_image=sandbox_image,
         )
         typer.echo(json.dumps(result, indent=2))
 
@@ -450,6 +508,17 @@ if _TYPER_AVAILABLE:
             "--dry-run/--no-dry-run",
             help="Dry run restores state+sandbox without re-running execution.",
         ),
+        sandbox: str = typer.Option(
+            "local",
+            "--sandbox",
+            help="Execution backend; must match the mission's original backend "
+            "('local' or 'docker').",
+        ),
+        sandbox_image: str = typer.Option(
+            _DEFAULT_SANDBOX_IMAGE,
+            "--sandbox-image",
+            help="Docker image for --sandbox docker.",
+        ),
     ) -> None:
         result = cmd_resume(
             mission_id=mission_id,
@@ -457,6 +526,8 @@ if _TYPER_AVAILABLE:
             from_milestone=from_milestone,
             router_config=router_config,
             dry_run=dry_run,
+            sandbox=sandbox,
+            sandbox_image=sandbox_image,
         )
         typer.echo(json.dumps(result, indent=2))
 
