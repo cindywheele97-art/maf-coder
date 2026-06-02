@@ -27,6 +27,7 @@ from maf_coder.orchestrator.budget import (
     MODE_PAUSED,
     BudgetGuard,
     classify_band,
+    default_budget_config,
     read_budget_usd,
 )
 from maf_coder.orchestrator.supervisor import SupervisionContext
@@ -90,6 +91,29 @@ def test_read_budget_precedence() -> None:
     assert read_budget_usd({"alert_threshold_usd": 50.0}) == 100.0
     # sane default when neither present
     assert read_budget_usd({}) == 100.0
+
+
+def test_default_budget_config_default() -> None:
+    cfg = default_budget_config()
+    # default budget matches the guard's own fallback, so seeding the file does
+    # not change runtime semantics — it only makes the budget visible/editable.
+    assert cfg == {"total_budget_usd": 100.0, "alert_threshold_usd": 50.0}
+
+
+def test_default_budget_config_explicit() -> None:
+    # alert is half of total (the 50% annotate band), mirroring read_budget_usd's
+    # inverse alert*2 fallback.
+    assert default_budget_config(250.0) == {
+        "total_budget_usd": 250.0,
+        "alert_threshold_usd": 125.0,
+    }
+
+
+def test_default_budget_config_round_trips_through_guard() -> None:
+    # The guard, reading back a seeded config, must resolve the exact budget the
+    # operator set — otherwise auto-gen would silently misreport the ceiling.
+    for amount in (100.0, 250.0, 999.0):
+        assert read_budget_usd(default_budget_config(amount)) == amount
 
 
 # -- Band effects on a live ctx --------------------------------------------

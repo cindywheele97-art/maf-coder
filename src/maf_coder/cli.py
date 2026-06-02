@@ -79,12 +79,16 @@ def cmd_mission_new(
     router_config: Path | None = None,
     dry_run: bool = True,
     coder_provider: str | None = None,
+    budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Bootstrap a new mission. Returns a JSON-serializable summary.
 
     `coder_provider` overrides the Coder's provider for the 异-provider rule.
     Left None (the usual case), the MissionDriver derives it from the router's
     coder_worker primary model.
+
+    `budget_usd` sets the full mission budget seeded into budget.yaml (the budget
+    guard's ceiling). Left None, the guard's default is used.
     """
     from .orchestrator import MissionConfig, MissionDriver
 
@@ -96,6 +100,7 @@ def cmd_mission_new(
         goal=goal,
         dry_run=dry_run,
         coder_provider_in_use=coder_provider,
+        total_budget_usd=budget_usd,
     )
     driver = MissionDriver(mission_id=mid, config=cfg)
     asyncio.run(driver.start())
@@ -383,6 +388,12 @@ if _TYPER_AVAILABLE:
             help="Override the Coder's provider for the 异-provider rule "
             "(e.g. 'anthropic'). Default: derived from the router's coder_worker model.",
         ),
+        budget_usd: float | None = typer.Option(
+            None,
+            "--budget-usd",
+            help="Full mission budget in USD, seeded into budget.yaml (the budget "
+            "guard's ceiling). Default: the guard's built-in default.",
+        ),
     ) -> None:
         result = cmd_mission_new(
             goal=goal,
@@ -391,6 +402,7 @@ if _TYPER_AVAILABLE:
             router_config=router_config,
             dry_run=dry_run,
             coder_provider=coder_provider,
+            budget_usd=budget_usd,
         )
         typer.echo(json.dumps(result, indent=2))
 

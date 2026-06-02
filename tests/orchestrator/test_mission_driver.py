@@ -61,6 +61,74 @@ async def test_dry_run_produces_profile_and_state(tmp_path: Path) -> None:
     assert "mission_end" in kinds
 
 
+@pytest.mark.asyncio
+async def test_start_seeds_budget_yaml(tmp_path: Path) -> None:
+    """A new mission must have budget.yaml on disk so the budget guard engages
+    from tick 1 — not left to the (single-turn) Orchestrator to produce."""
+    repo = tmp_path / "repo"
+    _write_repo(repo)
+    router_cfg = tmp_path / "droid.yaml"
+    _write_router(router_cfg)
+    cfg = MissionConfig(
+        missions_root=tmp_path / "missions",
+        repo_path=repo,
+        router_config=router_cfg,
+        goal="demo",
+        dry_run=True,
+    )
+    driver = MissionDriver(mission_id="m-bud", config=cfg)
+    await driver.start()
+    budget_path = cfg.missions_root / "m-bud" / "budget.yaml"
+    assert budget_path.exists()
+    cfg_dict = driver.store.read_yaml("budget.yaml")
+    assert cfg_dict == {"total_budget_usd": 100.0, "alert_threshold_usd": 50.0}
+
+
+@pytest.mark.asyncio
+async def test_start_honors_explicit_budget(tmp_path: Path) -> None:
+    """--budget-usd (MissionConfig.total_budget_usd) sets the ceiling the guard
+    reads back, so the operator can size a long run at launch."""
+    repo = tmp_path / "repo"
+    _write_repo(repo)
+    router_cfg = tmp_path / "droid.yaml"
+    _write_router(router_cfg)
+    cfg = MissionConfig(
+        missions_root=tmp_path / "missions",
+        repo_path=repo,
+        router_config=router_cfg,
+        goal="demo",
+        dry_run=True,
+        total_budget_usd=500.0,
+    )
+    driver = MissionDriver(mission_id="m-bud2", config=cfg)
+    await driver.start()
+    assert driver.store.read_yaml("budget.yaml") == {
+        "total_budget_usd": 500.0,
+        "alert_threshold_usd": 250.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_overwrite_existing_budget(tmp_path: Path) -> None:
+    """Idempotent: an operator-edited (or resumed) budget.yaml survives start()."""
+    repo = tmp_path / "repo"
+    _write_repo(repo)
+    router_cfg = tmp_path / "droid.yaml"
+    _write_router(router_cfg)
+    cfg = MissionConfig(
+        missions_root=tmp_path / "missions",
+        repo_path=repo,
+        router_config=router_cfg,
+        goal="demo",
+        dry_run=True,
+    )
+    driver = MissionDriver(mission_id="m-bud3", config=cfg)
+    # Operator wrote a custom budget before launch.
+    driver.store.write_yaml("budget.yaml", {"total_budget_usd": 42.0})
+    await driver.start()
+    assert driver.store.read_yaml("budget.yaml") == {"total_budget_usd": 42.0}
+
+
 def test_coder_provider_derived_from_router(tmp_path: Path) -> None:
     """When config leaves coder_provider_in_use=None, the driver derives it from
     the router's coder_worker primary (so the dynamic 异-provider half engages)."""

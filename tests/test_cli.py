@@ -64,6 +64,35 @@ def test_cmd_mission_new_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert out["dry_run"] is True
 
 
+def test_cmd_mission_new_budget_usd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--budget-usd flows into the seeded budget.yaml; omitting it uses the default."""
+    from maf_coder.blackboard import ArtifactStore
+
+    repo = tmp_path / "r"
+    _write_repo(repo)
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    root = tmp_path / "missions"
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(root))
+
+    cli.cmd_mission_new(
+        goal="demo", repo=repo, mission_id="m-bud", router_config=router,
+        dry_run=True, budget_usd=750.0,
+    )
+    assert ArtifactStore(root, "m-bud").read_yaml("budget.yaml") == {
+        "total_budget_usd": 750.0,
+        "alert_threshold_usd": 375.0,
+    }
+
+    cli.cmd_mission_new(
+        goal="demo", repo=repo, mission_id="m-bud-def", router_config=router, dry_run=True
+    )
+    assert ArtifactStore(root, "m-bud-def").read_yaml("budget.yaml") == {
+        "total_budget_usd": 100.0,
+        "alert_threshold_usd": 50.0,
+    }
+
+
 def test_cmd_mission_new_coder_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """--coder-provider flows into mission_state; omitting it derives from the
     router's coder_worker primary (anthropic in the test config)."""
