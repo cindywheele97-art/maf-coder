@@ -53,14 +53,22 @@ def _missions_root() -> Path:
 
 
 def _default_router_config() -> Path:
-    """Locate droid_whispering.yaml; prefer repo-local, fall back to packaged copy."""
-    cwd_local = Path.cwd() / "droid_whispering.yaml"
-    if cwd_local.exists():
-        return cwd_local
-    repo_local = Path(__file__).resolve().parents[2] / "droid_whispering.yaml"
-    if repo_local.exists():
-        return repo_local
-    raise FileNotFoundError("droid_whispering.yaml not found. Pass --router-config explicitly.")
+    """Locate droid_whispering.yaml. Canonical location is `config/`, but a
+    repo-root copy is also honored. Checks the cwd then the installed repo root."""
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        Path.cwd() / "config" / "droid_whispering.yaml",
+        Path.cwd() / "droid_whispering.yaml",
+        repo_root / "config" / "droid_whispering.yaml",
+        repo_root / "droid_whispering.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "droid_whispering.yaml not found in ./config, ., or the repo root. "
+        "Pass --router-config explicitly."
+    )
 
 
 def cmd_mission_new(

@@ -34,6 +34,15 @@ def _write_router(path: Path) -> None:
     )
 
 
+def test_default_router_config_resolves_to_existing_file() -> None:
+    """`mission new` without --router-config must find the shipped config — it
+    lives in config/, which the resolver now checks (regression for a path bug
+    that made the default always raise FileNotFoundError)."""
+    p = cli._default_router_config()
+    assert p.exists()
+    assert p.name == "droid_whispering.yaml"
+
+
 def test_cmd_mission_profile(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     _write_repo(repo)

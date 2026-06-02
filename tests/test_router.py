@@ -251,3 +251,18 @@ class TestChainResolution:
         # openai/gpt-5 (primary) and anthropic (static) blocked → only google left
         assert len(chain) == 1
         assert "google" in chain[0].model
+
+
+def test_shipped_config_loads_and_is_valid() -> None:
+    """The shipped config/droid_whispering.yaml MUST validate against the schema.
+
+    Regression: a stray `smart_router.judge.timeout_ms` key once made every real
+    mission fail at ModelRouter construction (ModelConfig is extra='forbid'). This
+    test loads the actual file the CLI ships so such drift fails loudly in CI.
+    """
+    cfg = Path(__file__).resolve().parents[1] / "config" / "droid_whispering.yaml"
+    assert cfg.exists(), "shipped config/droid_whispering.yaml is missing"
+    router = ModelRouter(cfg)
+    # Usable: every role the MissionDriver constructs resolves a provider.
+    for role in ("orchestrator", "coder_worker", "review_validator", "behavior_validator"):
+        assert router.provider_for_role(role)
