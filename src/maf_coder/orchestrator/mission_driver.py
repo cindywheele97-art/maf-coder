@@ -20,6 +20,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from ..agents.base import BaseAgent
 from ..agents.behavior import BehaviorValidatorAgent
 from ..agents.coder import CoderWorkerAgent
@@ -160,7 +162,10 @@ class MissionDriver:
           - "milestone_cap_reached" — hit the _MAX_MILESTONES backstop
         """
         for n in range(_MAX_MILESTONES):
-            milestone_id = f"m{n}"
+            # Use plan.md's milestone name (the first planned milestone from
+            # tasks.yaml not yet completed). Falls back to a synthetic boundary
+            # index only before the plan exists (the bootstrap/planning turn).
+            milestone_id = self._next_planned_milestone() or f"m{n}"
             self._set_current_milestone(milestone_id)
             scheduler = self._build_scheduler()
             self._scheduler = scheduler
@@ -221,6 +226,49 @@ class MissionDriver:
         if ms.current_milestone == milestone_id:
             return
         self.store.save_mission_state(ms.model_copy(update={"current_milestone": milestone_id}))
+
+    def _planned_milestones(self) -> list[str]:
+        """Ordered, distinct milestone ids from tasks.yaml's ``parent_milestone``
+        fields — the canonical plan.md milestone names the Orchestrator authored.
+
+        Empty (→ the loop falls back to a synthetic index) when tasks.yaml is
+        absent or unparseable; never raises. tasks.yaml is a list of Task, written
+        either at the top level or under a ``tasks:`` key — both are handled.
+        """
+        if not self.store.exists("tasks.yaml"):
+            return []
+        try:
+            data: Any = yaml.safe_load(self.store.read_text("tasks.yaml"))
+        except Exception:
+            return []
+        tasks = data.get("tasks") if isinstance(data, dict) else data
+        if not isinstance(tasks, list):
+            return []
+        ordered: list[str] = []
+        for t in tasks:
+            if isinstance(t, dict):
+                m = t.get("parent_milestone")
+                if isinstance(m, str) and m and m not in ordered:
+                    ordered.append(m)
+        return ordered
+
+    def _next_planned_milestone(self) -> str | None:
+        """The first planned milestone (from tasks.yaml) not yet in
+        ``completed_milestones``. None when there is no plan yet, or all planned
+        milestones are complete. Keyed on completion state — not turn index — so it
+        is correct despite the one-turn offset between dispatching a milestone and
+        checkpointing it."""
+        planned = self._planned_milestones()
+        if not planned:
+            return None
+        try:
+            completed = set(self.store.load_mission_state().completed_milestones)
+        except FileNotFoundError:
+            completed = set()
+        for m in planned:
+            if m not in completed:
+                return m
+        return None
 
     async def _run_under_supervisor(
         self, work: Callable[[], Awaitable[str | None]], *, result_on_complete: str
@@ -432,7 +480,10 @@ class MissionDriver:
         the current milestone's work, or — once the goal is delivered — calls
         `complete_mission` to end the loop.
         """
-        first = milestone_id == "m0"
+        # First turn == the planning turn: plan.md does not exist yet. (Keyed on
+        # plan.md, not the milestone name, so a plan that names a milestone "m0"
+        # is not mistaken for the bootstrap turn.)
+        first = not self.store.exists("plan.md")
         background = (
             "Mission bootstrap. The ProjectProfile and mission_state exist. "
             "Produce plan.md, lock validation_contract.yaml, then dispatch the "
