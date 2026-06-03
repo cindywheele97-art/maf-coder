@@ -255,7 +255,7 @@ For each ready task (dependencies satisfied):
 - If owner is `review_validator`: dispatch after the Coder task it reviews has produced `handoff.json` and `patch.diff`.
 - If owner is `behavior_validator`: dispatch after `review_verdict.json` result is PASS.
 - If `permission.human_approval_required: true`: emit ESCALATION_TRIGGERED event with target=human_gate and wait for `user_messages/<task_id>.approved`. Do not dispatch until approval received.
-- Pass `milestone_id` to `dispatch_task` set to the milestone the task belongs to (the plan.md name, matching `mission_state.current_milestone`). Omit it only when the task belongs to the current turn's milestone — it then inherits that milestone automatically.
+- Pass `milestone_id` to `dispatch_task` set to the milestone the task belongs to (the plan.md name). Omit it when the task belongs to the current milestone — it then defaults to `mission_state.current_milestone` automatically.
 
 ## Stuck Recovery
 
