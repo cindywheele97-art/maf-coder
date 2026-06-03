@@ -87,6 +87,17 @@ Tool function names use `snake_case`. Names must be:
 - Action-specific: `cargo_test` (not `test`, not `run_tests` — explicit about which underlying tool)
 - Boundary-tagged when ambiguous: `git_diff_in_sandbox` if there's also a host-side `git_diff` (rare; usually sandbox is implied)
 
+### Signature conventions (spec shorthand vs. code)
+
+Two stylistic differences between the signatures below and the implementation:
+
+- **Optional list/dict params**: signatures here sometimes show a mutable default
+  (`paths: list[str] = ["."]`, `args: list[str] = []`). The code avoids mutable
+  defaults — it uses `param: list[X] | None = None` and substitutes the default
+  inside the function. Read `= []` / `= [...]` as "optional, defaults to that."
+- **Concrete generics**: bare `dict` / `list[dict]` here are `dict[str, Any]` /
+  `list[dict[str, Any]]` in the typed code.
+
 ---
 
 ## 2. The BaseAgent class
@@ -1162,7 +1173,7 @@ def make_spawn_adversarial_subagent(ctx: TaskContext):
         known purpose.
 
         Returns:
-          {findings: list[dict], adversarial_tests_generated: list[str]}
+          {findings: list[str], adversarial_tests_generated: list[str]}
         
         The sub-agent runs on a DIFFERENT provider from both Coder AND the
         parent ReviewValidator (enforced by router; see §3 of soul.md).
@@ -1210,7 +1221,7 @@ Read-only on code, parallel-safe, can fetch external content.
 ```python
 def make_fetch_url(ctx: TaskContext):
     @function_tool
-    async def fetch_url(url: str) -> SanitizedContent:
+    async def fetch_url(url: str, timeout_sec: int = 30) -> SanitizedContent:
         """HTTP GET with sanitizer applied.
         
         Permission: check_network_allowed(perm, url, domain_whitelist).
@@ -1242,10 +1253,25 @@ def make_save_code_map(ctx: TaskContext):
         Module format: kebab-case identifier matching the module being mapped.
         """
 
+def make_save_dependency_brief(ctx: TaskContext):
+    @function_tool
+    async def save_dependency_brief(content_markdown: str) -> str:
+        """Save research_notes/dependency_brief.md (a single per-mission brief)."""
+
+def make_save_workspace_overview(ctx: TaskContext):
+    @function_tool
+    async def save_workspace_overview(content_markdown: str) -> str:
+        """Save research_notes/workspace_overview.md (a single per-mission overview)."""
+
 def make_cargo_metadata(ctx: TaskContext):
     @function_tool
     async def cargo_metadata() -> dict:
         """Run `cargo metadata --format-version 1`, return parsed JSON."""
+
+def make_cargo_tree(ctx: TaskContext):
+    @function_tool
+    async def cargo_tree(args: list[str] | None = None) -> CommandResult:
+        """Run `cargo tree` with optional extra args (dependency graph)."""
 
 def make_grep(ctx: TaskContext):
     @function_tool
@@ -1287,13 +1313,14 @@ def make_cargo_geiger(ctx: TaskContext):
 
 def make_gitleaks_detect(ctx: TaskContext):
     @function_tool
-    async def gitleaks_detect(path: str = ".") -> list[dict]:
-        """Run gitleaks detect, return list of findings."""
+    async def gitleaks_detect(path: str = ".") -> dict:
+        """Run gitleaks detect, return a findings report dict (also reused as the
+        pre-PR secrets gate by create_pr)."""
 
 def make_trufflehog_scan(ctx: TaskContext):
     @function_tool
-    async def trufflehog_scan(path: str = ".") -> list[dict]:
-        """Run trufflehog scan, return list of findings."""
+    async def trufflehog_scan(path: str = ".") -> dict:
+        """Run trufflehog scan, return a findings report dict."""
 
 def make_save_security_verdict(ctx: TaskContext):
     @function_tool
@@ -1303,6 +1330,11 @@ def make_save_security_verdict(ctx: TaskContext):
     ) -> str:
         """Save verdicts/<task_id>.security.json. Validates against SecurityVerdict
         schema. blocks_pr is derived from findings; do not pass it."""
+
+def make_save_security_notes(ctx: TaskContext):
+    @function_tool
+    async def save_security_notes(task_id: str, content_markdown: str) -> str:
+        """Save security_notes/<task_id>.md (human-readable scan narrative)."""
 ```
 
 ---
@@ -1367,33 +1399,31 @@ def make_save_behavior_evidence(ctx: TaskContext):
     async def save_behavior_evidence(task_id: str, name: str, content: bytes) -> str:
         """Save behavior_evidence/<task_id>/<name>. For traces, logs, recorded
         responses that BehaviorVerdict.evidence_path points to."""
+
+def make_run_behavior_probes(ctx: TaskContext):
+    @function_tool
+    async def run_behavior_probes(task_id: str) -> dict:
+        """Drive the probe strategy from project_profile.behavior_probe end to end
+        (start service / probe / collect observations), returning a result dict the
+        BehaviorValidator turns into a verdict."""
 ```
 
 ---
 
-## 12. Multi-day infrastructure tools (Phase E — sketched)
+## 12. Multi-day infrastructure (Phase E)
 
-These are typically called by the Mission Driver (§14), not by the Orchestrator agent — but the Orchestrator MAY invoke them via tools when relevant (e.g., `request_status_report_emission`).
-
-```python
-def make_request_status_report_emission(ctx: TaskContext):
-    @function_tool
-    async def request_status_report_emission(urgent: bool = False) -> str:
-        """Trigger an immediate status report emission.
-        
-        urgent=True: emitted regardless of time-since-last threshold.
-        Returns the path to the new status_report_<N>.md.
-        """
-
-def make_set_budget_mode(ctx: TaskContext):
-    @function_tool
-    async def set_budget_mode(mode: str) -> None:
-        """Manually set budget mode: 'normal' | 'cost_conscious' | 'paused'.
-        
-        Normally driven by Budget Guard automatically; this tool is for
-        Orchestrator override (e.g. user message says 'slow down spending').
-        """
-```
+> The originally-sketched `request_status_report_emission` and `set_budget_mode`
+> tools were **not** implemented. Phase E multi-day infrastructure runs instead as
+> `SupervisionHook`s on the `MissionSupervisor` tick loop (see §14), not as
+> Orchestrator-facing tools:
+>
+> - **budget guard** (`orchestrator/budget.py`, `make_budget_guard`) — sets
+>   `mission_state.budget_mode` automatically at the 50/80/100/150% bands.
+> - **status report** (`orchestrator/status_report.py`, `make_status_report_hook`).
+> - **inbox poll** (`orchestrator/inbox.py`, `make_inbox_poll_hook`).
+>
+> The Orchestrator's relevant tools live in §6: `get_budget_status`,
+> `poll_user_messages`, `mark_user_message_processed`, and `update_mission_state`.
 
 ---
 
