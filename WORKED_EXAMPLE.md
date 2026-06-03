@@ -439,6 +439,37 @@ Note `t4.acceptance_criteria` only lists `f1.a3` and `f1.a4` — the ones it can
 
 Also note `t4.failure_handling.retry_budget: 0` — validators don't retry. If validation fails, the Coder retries (per t2's retry_budget), not the validator.
 
+### 2.4 Milestone tagging at dispatch
+
+`tasks.yaml` is the *plan*. Tasks enter the live DAG when the Orchestrator calls `dispatch_task` — and that is where each task gets its milestone tag. The Driver re-invokes the Orchestrator once per milestone; before each turn it sets `mission_state.current_milestone` to the milestone being worked (the plan.md name, derived from `tasks.yaml`'s `parent_milestone` fields). Here that is `m1`.
+
+Each task's `parent_milestone` is resolved at dispatch with this precedence: **explicit `milestone_id` → live `mission_state.current_milestone` → the Orchestrator turn's own milestone**.
+
+This mission has a single milestone, so the Orchestrator omits `milestone_id` and every task inherits `current_milestone == "m1"`:
+
+```python
+# current_milestone is already "m1" (the Driver set it for this turn)
+dispatch_task(
+    task_id="t1",
+    owner="research_worker",
+    goal="Map existing routing layer; identify version-access mechanism",
+    background="Coder task t2 will add /version; needs the registration pattern",
+    acceptance_criteria=[],          # research tasks cover no contract assertions
+    # milestone_id omitted → defaults to current_milestone == "m1"
+)
+# → the scheduled task carries parent_milestone="m1", matching tasks.yaml
+```
+
+In a **multi-milestone** mission the Orchestrator is re-invoked at each boundary; it advances by working `current_milestone`, and may pass `milestone_id` explicitly to tag a task for a specific milestone (e.g. queueing a follow-up milestone's task while finishing the current one):
+
+```python
+dispatch_task(task_id="t9", owner="coder_worker", goal="...",
+              background="...", acceptance_criteria=["f3.a1"],
+              milestone_id="m2")   # explicitly tagged for m2, not the current milestone
+```
+
+When the goal is fully delivered, the Orchestrator calls `complete_mission(summary)` — the Driver's loop reads `mission_state.mission_complete` and stops re-invoking.
+
 ---
 
 ## 3. Research task (t1)
