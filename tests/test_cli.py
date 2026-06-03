@@ -201,6 +201,7 @@ def test_cmd_mission_status_for_running_mission(
     status = cli.cmd_mission_status("m-cli")
     assert status["mission_id"] == "m-cli"
     assert "cumulative_cost_usd" in status
+    assert status["budget_mode"] == "normal"  # surfaced so operators can see throttling
 
 
 def test_cmd_mission_status_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
