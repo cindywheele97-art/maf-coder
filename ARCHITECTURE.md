@@ -214,7 +214,7 @@ A *tool* is a Python async function registered with the agent. When the agent em
 
 Tools fall into three categories:
 
-1. **In-process tools** (Orchestrator only): operate on the host filesystem via ArtifactStore, on the EventLog, on the scheduler. Example: `dispatch_task`, `read_artifact`, `emit_status_report`.
+1. **In-process tools** (Orchestrator only): operate on the host filesystem via ArtifactStore, on the EventLog, on the scheduler. Example: `dispatch_task`, `read_artifact`, `emit_event`. (Status reports are emitted by a Mission Driver supervisor hook, not an Orchestrator tool.)
 
 2. **Sandbox tools** (Workers and Validators): operate inside the Docker container via `docker exec`. Example: `run_cargo_test`, `read_file`, `git_diff`. The tool function constructs a `docker exec` command, runs it, captures stdout/stderr/exit_code, returns to the agent.
 
@@ -226,7 +226,7 @@ The agent never knows whether a tool runs in-process or in-sandbox. It calls `re
 
 ### The scheduler
 
-A single async coroutine maintained by the Orchestrator. Responsibilities:
+A single async coroutine built and run by the Mission Driver (`_build_scheduler`; driven by `_milestone_loop`). The Orchestrator dispatches tasks into it via `dispatch_task`. Responsibilities:
 
 1. **Maintain the task DAG**: nodes are `Task` instances; edges are `depends_on` references.
 2. **Track active slots**: a `dict[Role, Task | None]` mapping each writable role to its current task. Coder Worker is the only role with a strict 1-slot limit (the soul.md §3.3 write-serial rule).
@@ -277,6 +277,7 @@ sequenceDiagram
     participant User
     participant CLI
     participant Driver as Mission Driver
+    participant Supervisor
     participant Orchestrator
     participant Scheduler
     participant Workers
@@ -284,58 +285,40 @@ sequenceDiagram
     participant Sandbox
     participant GitRemote
 
-    User->>CLI: maf-coder mission "<goal>" --repo /path
-    CLI->>Driver: start_mission(goal, repo, budget)
-    Driver->>Sandbox: docker run sandbox image
-    Driver->>Orchestrator: run_planning(goal, repo)
-    Orchestrator->>Sandbox: project_profiler(repo)
-    Sandbox-->>Orchestrator: ProjectProfile YAML
-    Orchestrator->>Orchestrator: draft plan.md
-    Orchestrator->>Orchestrator: draft validation_contract.yaml (LOCK)
-    Orchestrator->>Orchestrator: draft tasks.yaml (DAG)
-    Orchestrator-->>Driver: planning_complete
+    User->>CLI: maf-coder mission new "<goal>" --repo /path [--budget-usd N]
+    CLI->>Driver: start()
+    Driver->>Sandbox: start (docker run / local shell)
+    Driver->>Driver: init mission_state.json + seed budget.yaml
+    Driver->>Sandbox: profile_project(repo) → project_profile.yaml
+    Driver->>Supervisor: start concurrent tick loop (budget + status-report + inbox hooks)
 
-    loop For each milestone
-        Driver->>Scheduler: dispatch_milestone(m)
+    loop Per milestone — Driver re-invokes the Orchestrator
+        Driver->>Driver: set current_milestone (plan.md name from tasks.yaml)
+        Driver->>Orchestrator: run orchestrate task (fresh scheduler)
+        alt First turn (planning)
+            Orchestrator->>Orchestrator: read profile; draft plan.md; LOCK validation_contract.yaml; draft tasks.yaml
+        else Later turn (milestone boundary)
+            Orchestrator->>Orchestrator: read prior verdicts; create_checkpoint(prev milestone); stuck recovery on FAIL (§7)
+        end
+        Orchestrator->>Scheduler: dispatch_task × N (this milestone's DAG)
         par Parallel-safe phase
-            Scheduler->>Workers: research_worker.run(t_research)
-            Workers->>Sandbox: read files / external HTTP
-            Workers-->>Scheduler: handoff
+            Scheduler->>Workers: research / security (read-only)
+            Workers->>Sandbox: read files / scans / external HTTP
         end
-        Scheduler->>Workers: coder_worker.run(t_code)  
-        Note over Workers: Strictly serial (slot=1)
+        Scheduler->>Workers: coder_worker (slot=1, serial)
         Workers->>Sandbox: read + write files + cargo test
-        Workers-->>Scheduler: handoff (patch + tests + handoff.json)
-        par Validators run in parallel where allowed
-            Scheduler->>Workers: security_worker.run(t_sec)
-            Workers->>Sandbox: cargo audit + deny + geiger
-            Workers-->>Scheduler: security_verdict
-        and
-            Scheduler->>Validators: review_validator.run(t_review)
-            Validators->>Sandbox: cargo gates + sub-agent
-            Validators-->>Scheduler: review_verdict
-        end
-        alt review_verdict == PASS
-            Scheduler->>Validators: behavior_validator.run(t_behave)
-            Validators->>Sandbox: headless probe
-            Validators-->>Scheduler: behavior_verdict
-        else FAIL
-            Scheduler->>Orchestrator: invoke stuck recovery (§7)
-        end
-        Scheduler->>Driver: milestone_complete
-        Driver->>Driver: checkpoint(m)
-        Driver->>User: status_report if 4h+ since last
+        Scheduler->>Validators: review_validator, then behavior_validator on PASS
+        Validators->>Sandbox: cargo gates + sub-agent / headless probe
+        Orchestrator-->>Driver: turn result (dispatched work | complete_mission)
+        Driver->>Driver: stop if mission_complete, else next milestone
     end
 
-    Driver->>Orchestrator: run_finalization
-    Orchestrator->>Orchestrator: mission_retro.md + final_answer.md
-    Orchestrator->>GitRemote: git push + gh pr create
-    Orchestrator-->>Driver: mission_complete
-    Driver->>Sandbox: docker stop (preserve volumes)
-    Driver-->>User: PR URL
+    Note over Orchestrator,GitRemote: The completing turn writes final_answer.md + mission_retro.md,<br/>git push + create_pr, then calls complete_mission
+    Driver->>Sandbox: stop (preserve volumes)
+    Driver-->>User: result + PR URL
 ```
 
-**Key invariant in the lifecycle**: planning happens **once** at mission start. The validation contract is locked at the end of planning and not touched again unless Human Gate authorizes a re-plan. This is what gives the rest of the mission a fixed reference for "what does done mean."
+**Key invariant in the lifecycle**: although the Orchestrator is re-invoked once per milestone, planning happens **once** — on the first turn. The validation contract is locked at the end of that planning turn and not touched again unless Human Gate authorizes a re-plan. This is what gives the rest of the mission a fixed reference for "what does done mean."
 
 ---
 
@@ -402,10 +385,10 @@ The features that distinguish "agent loop that runs for hours" from "agent loop 
 
 ### 6.1 Status reports
 
-A background async task within the Mission Driver runs every 5 minutes:
+A `SupervisionHook` (`status_report.py`) registered on the `MissionSupervisor` tick loop emits a report when enough time has elapsed since the last (`DEFAULT_STATUS_INTERVAL` = 4h):
 
 ```
-every 5 minutes:
+each supervisor tick:
   if (now - last_status_report) >= 4h:
       build StatusReport from mission_state.json + EventLog
       ArtifactStore.save_status_report(report)
@@ -413,7 +396,7 @@ every 5 minutes:
       mission_state.last_status_report_at = now
 ```
 
-The status report **does not block execution**. The Driver schedules a "report" coroutine; the Orchestrator continues dispatching tasks while the report is being assembled.
+The status report **does not block execution**. The supervisor runs concurrently with the scheduler, so the Orchestrator's tasks keep draining while a report is assembled and pushed.
 
 Push channels (configured in `~/.maf-coder/config.yaml`):
 - Webhook URL (POST JSON of status_report)
@@ -423,7 +406,7 @@ Push channels (configured in `~/.maf-coder/config.yaml`):
 
 ### 6.2 Checkpoints
 
-After **every milestone** passes both validators, the Mission Driver creates a checkpoint:
+After a milestone passes both validators, the Orchestrator creates a checkpoint — via its `create_checkpoint` tool, called on the next milestone-boundary turn:
 
 ```python
 # Pseudocode — full signature in AGENT_TOOLS_SPEC.md
@@ -464,7 +447,7 @@ Process:
 2. Identify the target checkpoint (last completed if `--from` omitted; specific if given).
 3. Restore the container: `docker run` with the snapshotted image (if checkpoint snapshot exists) OR `docker run` fresh image and `git checkout` the tag.
 4. Restore `MissionState` to the checkpoint's state (completed_milestones up to and including target).
-5. Hand control to the Mission Driver, which dispatches the next milestone in plan.md.
+5. Hand control to the Mission Driver, which re-enters the execution path for not-yet-complete work.
 
 **The agents do NOT resume their internal state.** They start fresh per-task. This is by design — agent state is non-deterministic and brittle; only artifacts are durable. Resume happens at the *task boundary*, not mid-conversation.
 
@@ -473,12 +456,12 @@ Process:
 Polling pattern, not event-driven. At every milestone boundary (before dispatching the next milestone's first task), the Orchestrator:
 
 ```
-files = list(user_messages/<mission_id>/)
+files = list(user_messages/)   # paths are relative to missions/<mission_id>/
 # Process !urgent first, then alphabetical
 sorted_files = sorted(files, key=lambda f: (not f.startswith("!urgent"), f.name))
 for f in sorted_files:
     process_user_message(f)
-    move(f, processed_messages/<mission_id>/)
+    move(f, processed_messages/)
 mission_state.last_user_message_processed_at = now
 ```
 
@@ -496,30 +479,23 @@ User messages CANNOT modify:
 
 ### 6.5 Budget guard
 
-A background async task within the Mission Driver runs after every LLM call (subscribed to `EventLog.LLM_CALL` events):
+`BudgetGuard` is a `SupervisionHook` (`orchestrator/budget.py`) registered on the `MissionSupervisor` tick loop, so it runs on every supervisor tick (not per-LLM-call). Each tick it reads cumulative spend from the EventLog, divides by the budget (resolved from `budget.yaml`), and classifies the ratio into one of four bands — crossing each band exactly once (idempotent, anchored on `mission_state.budget_mode`):
 
 ```
-on every LLM_CALL event:
-    cumulative = mission_state.cumulative_cost_usd
-    thresholds = config.budget.thresholds
-    
-    if cumulative >= thresholds.force_stop * budget:    # 150%
-        pause_mission(reason="budget_force_stop")
-        escalate_to_human_gate(...)
-    elif cumulative >= thresholds.pause * budget:        # 100%
-        escalate_to_human_gate(...)
-    elif cumulative >= thresholds.warn * budget:         # 80%
-        enter_cost_conscious_mode()
-        emit_status_report(urgent=True)
-    elif cumulative >= thresholds.annotate * budget:     # 50%
-        # next status report will note this
-        mission_state.budget_annotation = "above 50%"
+each supervisor tick:
+    ratio = event_log.total_cost_usd() / read_budget_usd(budget.yaml)
+
+    if ratio >= 1.50:   # 150% — force band
+        budget_mode → "paused"; force-escalate to Human Gate
+    elif ratio >= 1.00: # 100%
+        budget_mode → "paused"; escalate to Human Gate   # scheduler stops NEW tasks
+    elif ratio >= 0.80: # 80%
+        budget_mode → "cost_conscious"; BUDGET_ALERT
+    elif ratio >= 0.50: # 50%
+        BUDGET_ALERT (annotate only — no mode change)
 ```
 
-Cost-conscious mode flips three flags read by the scheduler + router:
-1. Scheduler: max_concurrent_workers = 1 (disable parallel research)
-2. Router: use_fallback_for = ["review_validator", "adversarial_subagent"]
-3. Per-task retry budget = 1 (instead of default 2)
+The scheduler honors `budget_mode == "paused"` by refusing to launch NEW tasks (in-flight tasks drain). `"cost_conscious"` is currently a **recorded state flag only** — the intended enforcement (fewer parallel workers / cheaper validator model / fewer retries) is a documented TODO, not yet wired into the scheduler/router.
 
 ---
 
@@ -537,11 +513,11 @@ Three error classes, each handled differently:
 
 ### Stuck recovery three-tier (soul.md §5.4 in code form)
 
-Implemented as a state machine in `src/maf_coder/orchestrator/stuck_recovery.py` (Phase E):
+Implemented in `src/maf_coder/orchestrator/recovery.py` (Phase E):
 
 ```
 on task FAIL:
-    risk = classify_risk(task, failure_reason)
+    risk = trigger.risk           # RiskTier; triage(trigger) maps it to an action (recovery.py)
     
     if risk == LOW:
         # tier 1: auto retry
@@ -565,7 +541,7 @@ on task FAIL:
         wait_for_human_response()  # this is the only blocking wait in the whole system
 ```
 
-The classifier (`classify_risk`) is straightforward boolean logic on the failure type + retry count + milestone fail count + cost/wall-clock thresholds. It is NOT an LLM call.
+The triage (`triage` in `recovery.py`, a pure `StuckTrigger → RecoveryDecision` function) is straightforward boolean logic on the trigger's risk tier + kind. It is NOT an LLM call.
 
 ### Sandbox crash recovery
 
