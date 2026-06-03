@@ -167,6 +167,7 @@ def cmd_mission_status(mission_id: str) -> dict[str, Any]:
         "cumulative_cost_usd": ev.total_cost_usd(),
         "cumulative_tokens": sum(ev.total_tokens()),
         "coder_provider_in_use": ms.coder_provider_in_use,
+        "budget_mode": ms.budget_mode,
     }
 
 

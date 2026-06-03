@@ -178,7 +178,12 @@ maf-coder metrics --markdown
 
 1. **Trivial task + tiny repo** for run #1. You're testing the *machinery*, not building a feature.
 2. **Disposable `--repo`** — the Coder edits it in place via `LocalShellSandbox` (no isolation).
-3. **Set a budget** with `--budget-usd` on `mission new` (or edit the auto-seeded `budget.yaml`). The budget guard escalates at 50/80/100/150% and pauses at 100%. Start low, e.g. `--budget-usd 5`.
+3. **Set a budget** with `--budget-usd` on `mission new` (or edit the auto-seeded `budget.yaml`). Start low, e.g. `--budget-usd 5`. The budget guard acts at four bands of the budget (read live from `mission_state.budget_mode` each tick):
+   - **50%** — annotate only (a `BUDGET_ALERT` event; no behavior change).
+   - **80%** — `budget_mode → cost_conscious`, which is now *enforced*: the Scheduler serializes every role (no parallel research/security/review) and caps each task's retries to 1, and validators switch to their **fallback** model. ⚠️ For that model swap to actually save money, order each validator's `fallback:` in `config/droid_whispering.yaml` so the first entry is the cheaper model (the 异-provider rule is preserved regardless).
+   - **100%** — `budget_mode → paused`: the Scheduler refuses to launch NEW tasks (in-flight tasks drain) + escalates to the Human Gate.
+   - **150%** — force-pause regardless of approval.
+   To watch the throttle engage, grep `events.jsonl` for `budget_mode_changed` / `budget_alert`, or check `maf-coder mission status` (`budget_mode`).
 4. **Watch `events.jsonl` live** — kill it the moment it loops or thrashes; cost is real per LLM call.
 5. **Expect failure on run #1.** This is the first time the full loop executes against real models. Capture what breaks (the EventLog is your forensic record) and iterate.
 
