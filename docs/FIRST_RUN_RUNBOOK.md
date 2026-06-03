@@ -190,8 +190,10 @@ maf-coder metrics --markdown
   once per milestone (sets `current_milestone`, drains the dispatched DAG, repeats)
   until the Orchestrator calls `complete_mission`. A turn that dispatches no work
   and doesn't declare completion ends the loop; `_MAX_MILESTONES` (50) is the
-  backstop. Note: the Driver's milestone counter (m0, m1, …) is a turn/boundary
-  index — reconciling it with plan.md's named milestones is a future refinement.
+  backstop. `current_milestone` uses plan.md's milestone names (derived from
+  `tasks.yaml`'s `parent_milestone` fields — the first planned milestone not yet
+  in `completed_milestones`), falling back to a synthetic index only for the
+  bootstrap/planning turn before the plan exists.
 - **Docker sandbox is opt-in** — `mission new`/`resume` default to `--sandbox local`
   (unisolated host shell). Pass `--sandbox docker` (after `bash scripts/build_sandbox.sh`)
   for an isolated container; it fails loud if the daemon is down.

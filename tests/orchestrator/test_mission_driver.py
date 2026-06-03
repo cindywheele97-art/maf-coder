@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -405,3 +406,88 @@ async def test_milestone_loop_respects_max_cap(
     assert driver._stub.turns == ["m0", "m1", "m2"]  # capped at 3 turns
     ended = [e for e in driver.event_log.iter_events() if e.kind == "mission_end"]
     assert ended[-1].payload.get("result") == "milestone_cap_reached"
+
+
+# --- current_milestone reconciliation with plan.md ---------------------------
+
+
+def test_planned_milestones_from_tasks_yaml(tmp_path: Path) -> None:
+    """_planned_milestones derives ordered, distinct milestone ids from
+    tasks.yaml's parent_milestone fields; _next_planned skips completed ones."""
+    from maf_coder.schemas import MissionState
+
+    driver = _LoopTestDriver(mission_id="m-pm", config=_loop_cfg(tmp_path))
+    driver.store.save_mission_state(
+        MissionState(mission_id="m-pm", started_at=datetime.now(UTC))
+    )
+    assert driver._planned_milestones() == []  # no tasks.yaml yet
+    assert driver._next_planned_milestone() is None
+    driver.store.write_yaml(
+        "tasks.yaml",
+        {
+            "tasks": [
+                {"task_id": "t1", "parent_milestone": "setup"},
+                {"task_id": "t2", "parent_milestone": "setup"},
+                {"task_id": "t3", "parent_milestone": "feature"},
+            ]
+        },
+    )
+    assert driver._planned_milestones() == ["setup", "feature"]  # ordered, deduped
+    assert driver._next_planned_milestone() == "setup"
+    ms = driver.store.load_mission_state()
+    driver.store.save_mission_state(ms.model_copy(update={"completed_milestones": ["setup"]}))
+    assert driver._next_planned_milestone() == "feature"  # skips completed
+
+
+class _PlannedStub:
+    """Stub Orchestrator that authors a 2-milestone plan (non-'m' names) and then
+    works through it, recording the current_milestone the Driver set each turn."""
+
+    role = Role.ORCHESTRATOR
+
+    def __init__(self, store) -> None:  # type: ignore[no-untyped-def]
+        self.store = store
+        self.turns: list[str | None] = []
+
+    async def run(self, task, *, mission_id: str, coder_provider_in_use=None):  # type: ignore[no-untyped-def]
+        if not self.store.exists("plan.md"):
+            self.store.write_text("plan.md", "# plan\n- setup\n- feature\n")
+            self.store.write_yaml(
+                "tasks.yaml",
+                {
+                    "tasks": [
+                        {"task_id": "t1", "parent_milestone": "setup"},
+                        {"task_id": "t2", "parent_milestone": "feature"},
+                    ]
+                },
+            )
+            self.turns.append("plan")
+            return _LoopResult(tools_invoked=["dispatch_task"])
+        cm = self.store.load_mission_state().current_milestone
+        self.turns.append(cm)
+        ms = self.store.load_mission_state()
+        if cm is not None and cm not in ms.completed_milestones:
+            self.store.save_mission_state(
+                ms.model_copy(update={"completed_milestones": [*ms.completed_milestones, cm]})
+            )
+        if cm == "feature":  # last planned milestone → declare done
+            ms2 = self.store.load_mission_state()
+            self.store.save_mission_state(ms2.model_copy(update={"mission_complete": True}))
+            return _LoopResult(tools_invoked=[])
+        return _LoopResult(tools_invoked=["dispatch_task"])
+
+
+@pytest.mark.asyncio
+async def test_current_milestone_follows_plan_md_names(tmp_path: Path) -> None:
+    """The Driver labels current_milestone with plan.md's milestone names (from
+    tasks.yaml), not a synthetic m0/m1 index — proven by non-'m' names."""
+    driver = _LoopTestDriver(mission_id="m-plan", config=_loop_cfg(tmp_path))
+    driver.set_stub(_PlannedStub(driver.store))
+    await driver.start()
+
+    # Turn 0 = planning (no plan yet → synthetic "m0"); then the real plan names.
+    assert driver._stub.turns == ["plan", "setup", "feature"]
+    ms = driver.store.load_mission_state()
+    assert ms.mission_complete is True
+    assert ms.completed_milestones == ["setup", "feature"]
+    assert ms.current_milestone == "feature"
