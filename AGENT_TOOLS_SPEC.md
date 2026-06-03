@@ -100,7 +100,7 @@ Every role-specific agent (Orchestrator, ResearchWorker, CoderWorker, etc.) exte
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -138,7 +138,8 @@ class TaskContext:
 
     This object is the link between the SDK-level tool call and the
     underlying state (mission, sandbox, blackboard, router). It is constructed
-    once per BaseAgent.run invocation and never modified.
+    once per BaseAgent.run invocation; its fields are immutable except the
+    `tools_invoked` accumulator, to which each tool appends its name.
     """
     task: Task
     mission_id: str
@@ -147,6 +148,7 @@ class TaskContext:
     router: ModelRouter
     sandbox: "SandboxClient"      # see §15
     coder_provider_in_use: str | None = None  # for异-provider enforcement
+    tools_invoked: list[str] = field(default_factory=list, compare=False)  # appended by record_tool_call
 
 
 class BaseAgent(ABC, Generic[T]):
@@ -537,12 +539,17 @@ def make_dispatch_task(ctx: TaskContext):
         max_tokens: int = 100_000,
         max_runtime_sec: int = 600,
         risk_level: str = "low",
-    ) -> TaskHandle:
+        milestone_id: str | None = None,
+    ) -> dict:                            # {"task_id": ..., "dispatched_at": ...}
         """Schedule a task in the mission DAG.
 
         Validates the task against the locked validation contract: every
         assertion_id in acceptance_criteria MUST exist in the contract.
-        
+
+        `milestone_id` tags the task's milestone; when omitted it defaults to the
+        live `mission_state.current_milestone`, then to the Orchestrator turn's own
+        milestone.
+
         Permission: only Orchestrator role may call this tool.
         """
 ```
@@ -834,6 +841,42 @@ def make_get_budget_status(ctx: TaskContext):
         {tokens_used, cost_usd, alert_threshold_usd, projected_total_usd,
          wall_clock_vs_estimate_pct, current_mode (normal|cost_conscious)}
         """
+```
+
+### `complete_mission`
+
+```python
+def make_complete_mission(ctx: TaskContext):
+    @function_tool
+    async def complete_mission(summary: str) -> dict:
+        """Declare the mission goal fully delivered. Sets
+        mission_state.mission_complete = True; the Driver's milestone loop reads
+        this and stops re-invoking the Orchestrator. Returns {"mission_complete": True}.
+        Permission: Orchestrator only. Call only after the final milestone PASSED.
+        """
+```
+
+### `save_retro` (Phase F)
+
+```python
+def make_save_retro(ctx: TaskContext):
+    @function_tool
+    async def save_retro(...) -> dict:
+        """Assemble + persist mission_retro.md (what worked / failed / surprises /
+        global_lessons) and write project- and global-scope memory entries.
+        Permission: Orchestrator only. See §8 (cross-mission memory)."""
+```
+
+### `create_pr` (Phase F)
+
+```python
+def make_create_pr(ctx: TaskContext):
+    @function_tool
+    async def create_pr(...) -> dict:
+        """Open a PR via `gh`/`glab` in the sandbox: refuses on a dirty tree and on
+        gitleaks findings (pre-PR gate), generates the PR description from
+        mission_retro/final_answer + verdicts, and links artifacts. Returns the PR URL.
+        Permission: Orchestrator only. See integrations/vcs.py."""
 ```
 
 ---
@@ -1356,7 +1399,7 @@ def make_set_budget_mode(ctx: TaskContext):
 
 ## 13. Scheduler interface
 
-The Scheduler is an internal component, not directly tool-exposed. The Orchestrator interacts with it through `dispatch_task` and `wait_for_task` tools above.
+The Scheduler is an internal component, not directly tool-exposed. The Orchestrator dispatches work into it via the `dispatch_task` tool; dispatch is fire-and-forget (the Orchestrator inspects results on its next milestone turn, not by waiting). The Mission Driver builds the Scheduler and runs its loop.
 
 ### Interface
 
@@ -1371,6 +1414,8 @@ class Scheduler:
         router: ModelRouter,
         sandbox: SandboxClient,
         agent_factory: dict[Role, Callable[[], BaseAgent]],
+        mission_id: str,
+        coder_provider_in_use: str | None = None,
     ) -> None: ...
 
     async def add_task(self, task: Task) -> TaskHandle:
@@ -1396,24 +1441,26 @@ class Scheduler:
 
 Internal state:
 ```python
-self._active_workers: dict[Role, str | None] = {role: None for role in Role}
-# A task with owner=Role.CODER_WORKER is dispatchable iff _active_workers[CODER] is None.
+self._active_by_role: dict[Role, int] = defaultdict(int)   # in-flight count per role
+# A per-role cap (1 for CODER_WORKER / BEHAVIOR_VALIDATOR, unbounded for read-only roles)
+# gates dispatch: a task is dispatchable iff _active_by_role[owner] < cap.
 ```
 
-Slot acquisition wraps in `asyncio.Lock` per role to prevent races during dispatch decision.
+Dispatch decisions are made under an `asyncio.Lock` to prevent races.
 
 ### Concurrency rules implementation
 
 ```python
-def _is_ready(self, task: Task) -> bool:
+def _is_ready(self, rec) -> bool:
     # 1. All depends_on are complete
-    if any(self.task_status(dep) != "complete" for dep in task.depends_on):
+    if any(self._tasks[dep].state != "complete" for dep in rec.task.depends_on):
         return False
-    # 2. Slot for this owner is free (or unbounded for parallel roles)
-    if task.owner in {Role.CODER_WORKER, Role.BEHAVIOR_VALIDATOR}:
-        return self._active_workers[task.owner] is None
-    return True
+    # 2. The owner role's slot cap is not exhausted
+    return self._active_by_role[owner] < self._cap_for(owner)
 ```
+
+Behavior_validator has an extra runtime gate: it only runs once its `review_validator`
+dependency has a PASS verdict on disk (the dual-validator chain, §D3).
 
 ---
 
@@ -1426,25 +1473,27 @@ The top-level coroutine that orchestrates a full mission. Owns: scheduler, agent
 class MissionDriver:
     def __init__(
         self,
+        *,
         mission_id: str,
-        repo_path: Path,
-        goal: str,
-        config: MissionConfig,
+        config: MissionConfig,   # carries repo_path, goal, router_config, sandbox_factory, budget, ...
     ) -> None: ...
 
     async def start(self) -> None:
         """Run the full mission lifecycle:
-          1. Initialize sandbox container
-          2. Initialize ArtifactStore + EventLog + ModelRouter + SandboxClient
-          3. Run project_profiler -> save ProjectProfile
-          4. Run OrchestratorAgent in planning mode -> plan + contract + tasks
-          5. Hand DAG to Scheduler, schedule.run() until complete
-          6. Run OrchestratorAgent in finalization mode -> retro + PR
-          7. Stop sandbox container (preserve volumes)
-        
+          1. Start the sandbox (docker run / local shell)
+          2. Initialize mission_state.json; seed budget.yaml (default if absent)
+          3. Run project_profiler -> save project_profile.yaml  (Driver-side)
+          4. Run the milestone loop under a concurrent MissionSupervisor:
+             for each milestone — set current_milestone, build a fresh Scheduler,
+             RE-INVOKE the Orchestrator (it plans on the first turn, then dispatches
+             this milestone's DAG / reviews + checkpoints prior verdicts), drain the
+             Scheduler, and stop when the Orchestrator calls complete_mission.
+          5. Finalize (mission_end); the completing Orchestrator turn writes the
+             retro + opens the PR via its tools.
+          6. Stop the sandbox (preserve volumes)
+
         Catches:
           - asyncio.CancelledError: graceful shutdown, emit MISSION_END(aborted)
-          - BudgetExceededError: pause and emit ESCALATION
           - Any uncaught exception: log + emit MISSION_END(crashed) + raise
         """
 
@@ -1457,13 +1506,21 @@ class MissionDriver:
         graceful=False kills immediately."""
 ```
 
-### Background coroutines spawned by start()
+### Supervision hooks (run by the concurrent MissionSupervisor)
 
-- `status_report_timer`: polls every 5 min, emits if >= 4h since last
-- `budget_guard`: subscribes to LLM_CALL events, evaluates thresholds
-- `user_message_poller`: integrated into scheduler's milestone-boundary hook (not its own coroutine)
+`start()` runs the milestone loop under one `MissionSupervisor`, a heartbeat tick
+loop (`asyncio.create_task`, stopped cleanly on every exit path). Three hooks are
+registered on it — each is a `SupervisionHook` invoked per tick, NOT a separate
+coroutine or event subscriber:
 
-These are spawned with `asyncio.create_task` and cancelled cleanly on mission end.
+- **budget guard** (`make_budget_guard`): each tick, compares EventLog spend to the
+  budget and crosses the 50/80/100/150% bands (sets `mission_state.budget_mode`).
+- **status report** (`make_status_report_hook`): emits a report when ≥ the interval
+  (`DEFAULT_STATUS_INTERVAL` = 4h) has elapsed since the last.
+- **inbox poll** (`make_inbox_poll_hook`): drains `user_messages/`.
+
+The supervisor is scheduler-independent, so it spans the whole milestone loop even
+though the Scheduler is rebuilt per milestone.
 
 ---
 
