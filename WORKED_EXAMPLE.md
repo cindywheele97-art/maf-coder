@@ -441,14 +441,14 @@ Also note `t4.failure_handling.retry_budget: 0` — validators don't retry. If v
 
 ### 2.4 Milestone tagging at dispatch
 
-`tasks.yaml` is the *plan*. Tasks enter the live DAG when the Orchestrator calls `dispatch_task` — and that is where each task gets its milestone tag. The Driver re-invokes the Orchestrator once per milestone; before each turn it sets `mission_state.current_milestone` to the milestone being worked (the plan.md name, derived from `tasks.yaml`'s `parent_milestone` fields). Here that is `m1`.
+`tasks.yaml` is the *plan*. Tasks enter the live DAG when the Orchestrator calls `dispatch_task` — and that is where each task gets its milestone tag. At each milestone **boundary** the Driver re-invokes the Orchestrator, having set `mission_state.current_milestone` to the plan.md milestone name (derived from `tasks.yaml`'s `parent_milestone` fields — the first one not yet in `completed_milestones`). On the very first turn, before `tasks.yaml` exists, the Driver uses a synthetic placeholder (`m0`); the Orchestrator then records the first real milestone (`m1`) in `mission_state` as it writes the plan. Either way, by the time a milestone's tasks are dispatched, `current_milestone` holds that milestone's name — here `m1`.
 
 Each task's `parent_milestone` is resolved at dispatch with this precedence: **explicit `milestone_id` → live `mission_state.current_milestone` → the Orchestrator turn's own milestone**.
 
-This mission has a single milestone, so the Orchestrator omits `milestone_id` and every task inherits `current_milestone == "m1"`:
+This mission has a single milestone, so the Orchestrator omits `milestone_id` and every task inherits `current_milestone`, which is `"m1"` by dispatch time:
 
 ```python
-# current_milestone is already "m1" (the Driver set it for this turn)
+# current_milestone == "m1" (the Orchestrator recorded the first milestone while planning)
 dispatch_task(
     task_id="t1",
     owner="research_worker",
