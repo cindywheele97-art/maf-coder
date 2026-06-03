@@ -12,9 +12,10 @@ Why this exists:
         | 100% | budget_mode → "paused" + escalation; scheduler stops NEW work |
         | 150% | "paused" + force-escalate to the human gate                   |
 
-    "cost_conscious" is a *recorded state flag*: the actual enforcement (fewer
-    parallel workers / cheaper model / fewer retries) is consumed elsewhere and
-    is a documented TODO. This hook only sets the flag + emits the event.
+    This hook only sets the ``cost_conscious`` flag + emits the event. The
+    enforcement is consumed elsewhere (soul.md §5.5): the Scheduler serializes all
+    roles (cap 1) and caps per-task retries, and validator agents switch to their
+    cheaper fallback model — all keyed off ``mission_state.budget_mode``.
 
 Idempotency:
     Bands are crossed exactly once. The hook keys off the band already implied

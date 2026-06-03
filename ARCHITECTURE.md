@@ -495,7 +495,7 @@ each supervisor tick:
         BUDGET_ALERT (annotate only — no mode change)
 ```
 
-The scheduler honors `budget_mode == "paused"` by refusing to launch NEW tasks (in-flight tasks drain). `"cost_conscious"` is currently a **recorded state flag only** — the intended enforcement (fewer parallel workers / cheaper validator model / fewer retries) is a documented TODO, not yet wired into the scheduler/router.
+The scheduler honors `budget_mode == "paused"` by refusing to launch NEW tasks (in-flight tasks drain). `"cost_conscious"` is enforced (soul.md §5.5): the Scheduler serializes every role to one in-flight task (cap 1) and caps each task's retry budget, and validator agents (`BaseAgent`) switch to their cheaper fallback model — all read fresh from `mission_state.budget_mode`. (The fallback chain keeps the 异-provider rule, and the operator is responsible for ordering the fallback so it is the cheaper model.)
 
 ---
 

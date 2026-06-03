@@ -385,3 +385,96 @@ class TestRun:
         assert result.errored is True
         assert "parse_failed" in (result.error_reason or "")
         assert result.raw_output == "x"  # raw output is preserved
+
+
+# ---------------------------------------------------------------------------
+# Cost-conscious model selection (soul.md §5.5)
+# ---------------------------------------------------------------------------
+
+
+class _ReviewStub(_StubAgent):
+    role = Role.REVIEW_VALIDATOR
+
+
+def _cc_router(tmp_path: Path) -> ModelRouter:
+    """review_validator with a distinct fallback so we can tell which was used."""
+    cfg = tmp_path / "cc_droid.yaml"
+    cfg.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  review_validator:\n"
+        "    primary: {model: openai/gpt-primary, temperature: 0.0, max_tokens: 1000}\n"
+        "    fallback:\n"
+        "      - {model: google/gemini-fallback, temperature: 0.0, max_tokens: 1000}\n"
+    )
+    return ModelRouter(cfg)
+
+
+async def _review_model_used(tmp_path, store, event_log, prompt_file, *, budget_mode: str) -> str:
+    from datetime import UTC, datetime
+
+    from maf_coder.schemas import MissionState
+
+    store.save_mission_state(
+        MissionState(
+            mission_id=store.mission_id,
+            started_at=datetime.now(UTC),
+            budget_mode=budget_mode,
+        )
+    )
+    agent = _ReviewStub(
+        prompt_path=prompt_file,
+        raw_output="ok",
+        store=store,
+        event_log=event_log,
+        router=_cc_router(tmp_path),
+        sandbox=_DummySandbox(),
+    )
+    res = await agent.run(_make_task(), mission_id=store.mission_id)
+    return res.model_used
+
+
+@pytest.mark.asyncio
+async def test_cost_conscious_validator_uses_fallback(
+    tmp_path, store, event_log, prompt_file
+) -> None:
+    """soul.md §5.5: a validator uses its cheaper fallback model in cost_conscious
+    mode; normal mode uses the primary."""
+    assert (
+        await _review_model_used(tmp_path, store, event_log, prompt_file, budget_mode="normal")
+        == "openai/gpt-primary"
+    )
+    assert (
+        await _review_model_used(
+            tmp_path, store, event_log, prompt_file, budget_mode="cost_conscious"
+        )
+        == "google/gemini-fallback"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cost_conscious_non_validator_unaffected(
+    tmp_path, store, event_log, prompt_file, stub_router
+) -> None:
+    """A non-validator (coder) keeps its primary even in cost_conscious mode."""
+    from datetime import UTC, datetime
+
+    from maf_coder.schemas import MissionState
+
+    store.save_mission_state(
+        MissionState(
+            mission_id=store.mission_id,
+            started_at=datetime.now(UTC),
+            budget_mode="cost_conscious",
+        )
+    )
+    agent = _StubAgent(  # role = CODER_WORKER
+        prompt_path=prompt_file,
+        raw_output="ok",
+        store=store,
+        event_log=event_log,
+        router=stub_router,
+        sandbox=_DummySandbox(),
+    )
+    res = await agent.run(_make_task(), mission_id=store.mission_id)
+    assert res.model_used == "anthropic/claude-test"

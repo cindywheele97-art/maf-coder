@@ -88,11 +88,16 @@ class _FakeAgent(BaseAgent[str]):
         )
 
 
-def _task(tid: str, depends_on: list[str] | None = None, retry: int = 0) -> Task:
+def _task(
+    tid: str,
+    depends_on: list[str] | None = None,
+    retry: int = 0,
+    owner: Role = Role.CODER_WORKER,
+) -> Task:
     return Task(
         task_id=tid,
         parent_milestone="m1",
-        owner=Role.CODER_WORKER,
+        owner=owner,
         priority=RiskLevel.MEDIUM,
         risk_level=RiskLevel.LOW,
         goal="x",
@@ -354,5 +359,114 @@ async def test_no_mission_state_is_not_paused(tmp_path, router, store) -> None:
         await sched.add_task(_task("t1"))
         await sched.run()
         assert sched.task_status("t1") == "complete"
+    finally:
+        await sandbox.stop()
+
+
+# -- Phase E §E5 / soul.md §5.5 — cost-conscious enforcement ----------------
+
+
+async def _peak_parallel_research(tmp_path, router, store, *, budget_mode: str) -> int:
+    """Run two independent research_worker tasks under `budget_mode`; return the
+    peak number that ran concurrently."""
+    _save_state(store, budget_mode=budget_mode)
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        in_flight = 0
+        peak = 0
+
+        class _ResearchWatcher(_FakeAgent):
+            role = Role.RESEARCH_WORKER
+
+            async def run(self, task, **kw):  # type: ignore[override]
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0.05)
+                in_flight -= 1
+                return await super().run(task, **kw)
+
+        agent = _ResearchWatcher(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox
+        )
+        sched = Scheduler(
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
+            agent_factory={Role.RESEARCH_WORKER: lambda: agent},
+            mission_id=store.mission_id,
+        )
+        await sched.add_task(_task("r1", owner=Role.RESEARCH_WORKER))
+        await sched.add_task(_task("r2", owner=Role.RESEARCH_WORKER))
+        await sched.run()
+        return peak
+    finally:
+        await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_cost_conscious_serializes_parallel_roles(tmp_path, router, store) -> None:
+    """soul.md §5.5: cost_conscious caps every role to 1, so two research tasks
+    that run in parallel under normal mode are serialized."""
+    # Sanity: normal mode lets the two research tasks overlap.
+    assert await _peak_parallel_research(tmp_path, router, store, budget_mode="normal") == 2
+    # Cost-conscious mode serializes them.
+    assert (
+        await _peak_parallel_research(tmp_path, router, store, budget_mode="cost_conscious") == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_cost_conscious_caps_retries(tmp_path, router, store) -> None:
+    """soul.md §5.5: cost_conscious caps a task's retry budget at 1, so an
+    always-failing task with retry_budget=2 is attempted 2x, not 3x."""
+    _save_state(store, budget_mode="cost_conscious")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        agent = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            outcome="fail",
+        )
+        sched = Scheduler(
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
+            agent_factory={Role.CODER_WORKER: lambda: agent},
+            mission_id=store.mission_id,
+        )
+        await sched.add_task(_task("t1", retry=2))
+        await sched.run()
+        assert sched.task_status("t1") == "failed"
+        assert agent.calls == 2, f"expected 2 attempts (retry capped at 1), got {agent.calls}"
+    finally:
+        await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_uses_full_retry_budget(tmp_path, router, store) -> None:
+    """Contrast: normal mode honors the full retry_budget (2 → 3 attempts)."""
+    _save_state(store, budget_mode="normal")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        agent = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            outcome="fail",
+        )
+        sched = Scheduler(
+            store=store,
+            event_log=store.event_log(),
+            router=router,
+            sandbox=sandbox,
+            agent_factory={Role.CODER_WORKER: lambda: agent},
+            mission_id=store.mission_id,
+        )
+        await sched.add_task(_task("t1", retry=2))
+        await sched.run()
+        assert agent.calls == 3
     finally:
         await sandbox.stop()
