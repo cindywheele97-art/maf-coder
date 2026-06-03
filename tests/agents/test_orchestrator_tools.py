@@ -204,6 +204,30 @@ class TestDispatchTask:
         assert "t2" in sched.tasks
 
     @pytest.mark.asyncio
+    async def test_milestone_id_tags_task_else_inherits(self, store, router) -> None:
+        """milestone_id tags the dispatched task with that milestone; omitting it
+        inherits the Orchestrator turn's milestone (_orch_ctx uses 'm1')."""
+        ctx = _orch_ctx(store, router, _StubSandbox())
+        sched = _StubScheduler()
+        await make_dispatch_task(ctx, scheduler=sched)(
+            task_id="t-explicit",
+            owner="coder_worker",
+            goal="x",
+            background="x",
+            acceptance_criteria=["f1.a1"],
+            milestone_id="m3",
+        )
+        await make_dispatch_task(ctx, scheduler=sched)(
+            task_id="t-inherit",
+            owner="coder_worker",
+            goal="x",
+            background="x",
+            acceptance_criteria=["f1.a1"],
+        )
+        assert sched.tasks["t-explicit"].parent_milestone == "m3"
+        assert sched.tasks["t-inherit"].parent_milestone == "m1"
+
+    @pytest.mark.asyncio
     async def test_duplicate_dispatch_raises(self, store, router) -> None:
         ctx = _orch_ctx(store, router, _StubSandbox())
         sched = _StubScheduler()
