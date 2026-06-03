@@ -132,9 +132,10 @@ def make_dispatch_task(ctx: TaskContext, *, scheduler: _SchedulerLike | None = N
     ) -> dict[str, Any]:
         """Schedule a task in the mission DAG. Orchestrator-only.
 
-        `milestone_id` tags the task with the milestone it belongs to (use the
-        plan.md milestone name, matching mission_state.current_milestone). When
-        omitted, the task inherits the Orchestrator turn's own milestone.
+        `milestone_id` tags the task with the milestone it belongs to (the plan.md
+        milestone name). When omitted, it defaults to the live
+        `mission_state.current_milestone` (the source of truth), falling back to
+        the Orchestrator turn's own milestone if that is unset.
         """
         _require_orchestrator(ctx, "dispatch_task")
         check_tool_allowed(ctx.task.permission, "dispatch_task")
@@ -185,9 +186,21 @@ def make_dispatch_task(ctx: TaskContext, *, scheduler: _SchedulerLike | None = N
                     f"review_validator task (depends_on={depends_on or []}); refusing dispatch"
                 )
 
+        # Milestone precedence: explicit milestone_id → live current_milestone
+        # (mission_state is the source of truth) → the Orchestrator turn's own
+        # milestone as a last-resort snapshot fallback.
+        resolved_milestone = milestone_id
+        if not resolved_milestone:
+            try:
+                resolved_milestone = ctx.store.load_mission_state().current_milestone
+            except Exception:
+                resolved_milestone = None
+        if not resolved_milestone:
+            resolved_milestone = ctx.task.parent_milestone
+
         task = Task(
             task_id=task_id,
-            parent_milestone=milestone_id or ctx.task.parent_milestone,
+            parent_milestone=resolved_milestone,
             owner=owner_enum,
             priority=risk_enum,
             risk_level=risk_enum,

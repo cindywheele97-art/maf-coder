@@ -204,11 +204,33 @@ class TestDispatchTask:
         assert "t2" in sched.tasks
 
     @pytest.mark.asyncio
-    async def test_milestone_id_tags_task_else_inherits(self, store, router) -> None:
-        """milestone_id tags the dispatched task with that milestone; omitting it
-        inherits the Orchestrator turn's milestone (_orch_ctx uses 'm1')."""
+    async def test_milestone_precedence_explicit_then_current_then_inherit(
+        self, store, router
+    ) -> None:
+        """Milestone precedence: explicit milestone_id > live current_milestone >
+        the Orchestrator turn's snapshot (_orch_ctx task uses 'm1')."""
         ctx = _orch_ctx(store, router, _StubSandbox())
         sched = _StubScheduler()
+
+        # current_milestone unset (None) → falls back to the turn's milestone 'm1'.
+        await make_dispatch_task(ctx, scheduler=sched)(
+            task_id="t-inherit",
+            owner="coder_worker",
+            goal="x",
+            background="x",
+            acceptance_criteria=["f1.a1"],
+        )
+        # Set the live current_milestone → the default now follows it.
+        ms = store.load_mission_state()
+        store.save_mission_state(ms.model_copy(update={"current_milestone": "live-ms"}))
+        await make_dispatch_task(ctx, scheduler=sched)(
+            task_id="t-current",
+            owner="coder_worker",
+            goal="x",
+            background="x",
+            acceptance_criteria=["f1.a1"],
+        )
+        # Explicit milestone_id wins over current_milestone.
         await make_dispatch_task(ctx, scheduler=sched)(
             task_id="t-explicit",
             owner="coder_worker",
@@ -217,15 +239,9 @@ class TestDispatchTask:
             acceptance_criteria=["f1.a1"],
             milestone_id="m3",
         )
-        await make_dispatch_task(ctx, scheduler=sched)(
-            task_id="t-inherit",
-            owner="coder_worker",
-            goal="x",
-            background="x",
-            acceptance_criteria=["f1.a1"],
-        )
-        assert sched.tasks["t-explicit"].parent_milestone == "m3"
         assert sched.tasks["t-inherit"].parent_milestone == "m1"
+        assert sched.tasks["t-current"].parent_milestone == "live-ms"
+        assert sched.tasks["t-explicit"].parent_milestone == "m3"
 
     @pytest.mark.asyncio
     async def test_duplicate_dispatch_raises(self, store, router) -> None:
