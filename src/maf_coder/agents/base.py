@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from ..blackboard import ArtifactStore
 from ..blackboard.event_log import EventLog
-from ..models import ModelRouter
+from ..models import ModelConfig, ModelRouter
 from ..schemas import Role, Task
 from . import _sdk
 from .errors import ToolError
@@ -197,6 +197,34 @@ class BaseAgent(ABC, Generic[T]):
     def parse_output(self, raw_output: str, ctx: TaskContext) -> T:
         """Extract the structured output from the raw final_output text."""
 
+    # -- Cost-conscious model selection (soul.md §5.5) --------------------
+
+    def _cost_conscious_fallback_model(
+        self, role_name: str, coder_provider_in_use: str | None
+    ) -> ModelConfig | None:
+        """The validator's cheaper fallback ModelConfig when the mission is in
+        cost_conscious budget mode, else None (normal routing).
+
+        Only validator roles consult mission_state, so non-validator agents pay no
+        extra read. The fallback chain already enforces the 异-provider rule, so a
+        cost-conscious swap can never put a validator on the Coder's provider.
+        Operators are responsible for ordering the fallback so it is the cheaper
+        model (see config/droid_whispering.yaml).
+        """
+        if role_name not in ("review_validator", "behavior_validator"):
+            return None
+        if not hasattr(self.router, "get_fallback_chain"):
+            return None
+        try:
+            if self.store.load_mission_state().budget_mode != "cost_conscious":
+                return None
+        except Exception:
+            return None
+        chain = self.router.get_fallback_chain(
+            role_name, coder_provider_in_use=coder_provider_in_use
+        )
+        return chain[0] if chain else None
+
     # -- Lifecycle --------------------------------------------------------
 
     async def run(
@@ -233,7 +261,13 @@ class BaseAgent(ABC, Generic[T]):
         # when None, forbidden_providers from config still applies.
         role_name = self.role.value if hasattr(self.role, "value") else self.role
         try:
-            if hasattr(self.router, "resolve_model"):
+            # Cost-conscious enforcement (soul.md §5.5): a validator uses its
+            # cheaper fallback model once the budget guard enters cost_conscious
+            # mode. Returns None outside that case, so normal routing is untouched.
+            cc_model = self._cost_conscious_fallback_model(role_name, coder_provider_in_use)
+            if cc_model is not None:
+                model_cfg = cc_model
+            elif hasattr(self.router, "resolve_model"):
                 model_cfg = await self.router.resolve_model(
                     role_name,
                     task=task,

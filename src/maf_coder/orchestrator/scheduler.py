@@ -47,6 +47,15 @@ _PARALLEL_LIMIT = {
 }
 _PARALLEL_DEFAULT = 4
 
+# Budget modes (mirror MissionState.budget_mode / budget.py).
+_MODE_PAUSED = "paused"
+_MODE_COST_CONSCIOUS = "cost_conscious"
+
+# Cost-conscious enforcement (soul.md §5.5): serialize parallel roles and cap
+# per-task retries to curb spend once the budget guard crosses the 80% band.
+_COST_CONSCIOUS_PARALLEL_CAP = 1
+_COST_CONSCIOUS_RETRY_CAP = 1
+
 
 @dataclass
 class _TaskRecord:
@@ -134,7 +143,7 @@ class Scheduler:
 
     # -- Readiness logic ---------------------------------------------------
 
-    def _is_ready(self, rec: _TaskRecord) -> bool:
+    def _is_ready(self, rec: _TaskRecord, cost_conscious: bool = False) -> bool:
         if rec.state != "pending":
             return False
         # All dependencies complete
@@ -142,9 +151,12 @@ class Scheduler:
             dep = self._tasks.get(dep_id)
             if dep is None or dep.state != "complete":
                 return False
-        # Slot available for this role
+        # Slot available for this role. Cost-conscious mode (soul.md §5.5)
+        # serializes every role (cap 1) to close down parallel spend.
         owner = self._coerce_role(rec.task.owner)
         cap = _PARALLEL_LIMIT.get(owner, _PARALLEL_DEFAULT)
+        if cost_conscious:
+            cap = min(cap, _COST_CONSCIOUS_PARALLEL_CAP)
         return self._active_by_role[owner] < cap
 
     @staticmethod
@@ -207,18 +219,20 @@ class Scheduler:
 
     # -- Budget pause gate (Phase E §E5) -----------------------------------
 
-    def _budget_paused(self) -> bool:
-        """True iff the budget guard has driven the mission into "paused".
-
-        Read fresh from mission_state each scheduling pass so a pause set by the
-        concurrently-running budget SupervisionHook takes effect on the next
-        pass. Missing/unreadable state is treated as NOT paused (fail-open: a
-        read error must never wedge a mission that isn't actually over budget).
+    def _budget_mode(self) -> str:
+        """Current budget mode from mission_state, read fresh each scheduling pass
+        so a transition set by the concurrent budget SupervisionHook takes effect
+        on the next pass. Missing/unreadable state fails open to "normal" — a read
+        error must never wedge or throttle a mission that isn't over budget.
         """
         try:
-            return self.store.load_mission_state().budget_mode == "paused"
+            return self.store.load_mission_state().budget_mode
         except Exception:
-            return False
+            return "normal"
+
+    def _budget_paused(self) -> bool:
+        """True iff the budget guard has driven the mission into "paused"."""
+        return self._budget_mode() == _MODE_PAUSED
 
     def _block_paused_task(self, rec: _TaskRecord) -> None:
         """Refuse to launch a NEW task while budget_mode == "paused".
@@ -343,13 +357,16 @@ class Scheduler:
 
         while True:
             launched_any = False
-            # Phase E §E5 — read the budget pause flag once per scheduling pass.
-            # When paused, NEW tasks are refused (blocked + event); in-flight
-            # tasks in `active_tasks` keep running and drain normally.
-            paused = self._budget_paused()
+            # Phase E §E5 — read the budget mode once per scheduling pass. When
+            # paused, NEW tasks are refused (blocked + event); in-flight tasks
+            # drain normally. When cost_conscious (soul.md §5.5), every role is
+            # serialized (cap 1) and retries are capped in `_run_one`.
+            mode = self._budget_mode()
+            paused = mode == _MODE_PAUSED
+            cost_conscious = mode == _MODE_COST_CONSCIOUS
             async with self._lock:
                 for rec in self._tasks.values():
-                    if not self._is_ready(rec):
+                    if not self._is_ready(rec, cost_conscious):
                         continue
                     # Budget pause gate (Phase E §E5): refuse NEW dispatch while
                     # paused. Mirrors the D3 chain-gate block style.
@@ -370,7 +387,7 @@ class Scheduler:
                     rec.state = "active"
                     owner = self._coerce_role(rec.task.owner)
                     self._active_by_role[owner] += 1
-                    t = asyncio.create_task(self._run_one(rec))
+                    t = asyncio.create_task(self._run_one(rec, cost_conscious))
                     active_tasks.add(t)
                     launched_any = True
 
@@ -402,7 +419,7 @@ class Scheduler:
                 # Avoid spinning when no slot was free even though tasks are pending.
                 await asyncio.sleep(0.05)
 
-    async def _run_one(self, rec: _TaskRecord) -> None:
+    async def _run_one(self, rec: _TaskRecord, cost_conscious: bool = False) -> None:
         owner = self._coerce_role(rec.task.owner)
         try:
             agent = self.agent_factory[owner]()
@@ -420,7 +437,11 @@ class Scheduler:
             rec.done_event.set()
             return
 
-        max_attempts = max(1, 1 + rec.task.failure_handling.retry_budget)
+        # Cost-conscious mode (soul.md §5.5) caps retries to curb spend.
+        retry_budget = rec.task.failure_handling.retry_budget
+        if cost_conscious:
+            retry_budget = min(retry_budget, _COST_CONSCIOUS_RETRY_CAP)
+        max_attempts = max(1, 1 + retry_budget)
         result: AgentResult[Any] | None = None
         t0 = time.monotonic()
         for attempt in range(1, max_attempts + 1):
