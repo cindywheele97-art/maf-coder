@@ -24,11 +24,12 @@ the `maf-coder mission new --coder-provider <p>` override), so **both** the
 static (`forbidden_providers`) and dynamic halves of the 异-provider rule are
 active on a real run.
 
-> Caveat for run #1: the bootstrap seeds exactly one Orchestrator turn. It lays
-> out the initial DAG up-front (as in `WORKED_EXAMPLE.md`). Re-invoking the
-> Orchestrator at later milestone boundaries (for multi-milestone missions) is a
-> future enhancement; a single-milestone task like the one below exercises the
-> full Coder → Review → Behavior chain end to end.
+> Note for run #1: the Driver now **re-invokes the Orchestrator once per
+> milestone** (`_milestone_loop`): it sets `current_milestone`, runs the
+> Orchestrator turn, drains the dispatched DAG, and repeats until the Orchestrator
+> calls `complete_mission` (or a turn dispatches no work). The single-milestone
+> task below still exercises the full Coder → Review → Behavior chain end to end —
+> it just completes after one milestone instead of being capped at one turn.
 
 ---
 
@@ -48,9 +49,11 @@ active on a real run.
   `cargo`/shell commands **directly on the host filesystem in `--repo`, with no
   container isolation** and only app-level network policy. So:
   **always point `--repo` at a fresh disposable clone or git worktree**, never
-  your real working tree. (Docker isolation exists — `DockerSandbox` + the rust
-  Dockerfile — but is **not yet wired into the CLI**; `cmd_mission_new` hardcodes
-  `LocalShellSandbox`. Wiring a `--sandbox docker` flag is a small follow-up.)
+  your real working tree — unless you opt into Docker isolation with
+  **`--sandbox docker`** (the default is `--sandbox local`). `--sandbox docker`
+  runs in `DockerSandbox` (the rust Dockerfile image, default `maf-coder:rust-sandbox`)
+  and **fails loud** if the daemon is down — build the image first with
+  `bash scripts/build_sandbox.sh`.
 - **Budget mindset.** A real Opus/GPT-5 multi-agent mission burns real money.
   Keep the first task trivial.
 
