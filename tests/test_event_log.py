@@ -306,3 +306,47 @@ class TestRouteDecisionEvent:
         ev = next(iter(log.filter_kind(EventKind.ROUTE_DECISION)))
         assert ev.payload["saved_vs_baseline_usd"] is None
         assert ev.task_id is None
+
+
+# ---------------------------------------------------------------------------
+# F1: concurrent appends must not tear lines (process-wide path-keyed lock)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_thread_appends_do_not_interleave(tmp_path: Path) -> None:
+    """Many threads each open a SEPARATE EventLog on the same file (mirrors
+    ArtifactStore.event_log() handing out a fresh instance per call) and append a
+    >4KB event concurrently. The shared per-file lock must keep every line intact:
+    correct count, all valid JSON, no missing/duplicated indices. Without the lock
+    the large lines interleave and the jsonl is corrupt."""
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "events.jsonl"
+    n = 200
+    blob = "x" * 8000  # well past PIPE_BUF (~4KB) → interleaving likely without the lock
+
+    def writer(i: int) -> None:
+        # New EventLog instance per call — the realistic per-mission pattern.
+        EventLog(path).append(
+            Event(kind=EventKind.LLM_CALL.value, mission_id="m", payload={"i": i, "blob": blob})
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(writer, range(n)))
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == n, f"expected {n} lines, got {len(lines)} (torn/interleaved writes)"
+    parsed = [json.loads(line) for line in lines]  # raises if any line is torn
+    assert sorted(p["payload"]["i"] for p in parsed) == list(range(n))
+
+
+def test_event_log_instances_share_one_lock_per_path(tmp_path: Path) -> None:
+    """Two EventLog instances on the same file resolve to the SAME append lock
+    (so cross-instance appends serialize); a different file gets a different lock."""
+    path = tmp_path / "events.jsonl"
+    a = EventLog(path)
+    b = EventLog(path)
+    assert a._append_lock is b._append_lock
+    other = EventLog(tmp_path / "other.jsonl")
+    assert other._append_lock is not a._append_lock
