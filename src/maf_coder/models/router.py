@@ -195,6 +195,36 @@ def _usd_per_mtok(model_id: str) -> float | None:
     return None
 
 
+# Conservative $/Mtok floor for models that match nothing in the approx table
+# (custom / self-hosted endpoints — MiMo, DeepSeek, …). Non-zero so an unpriced
+# model never logs $0 and blinds the budget guard (F3).
+_DEFAULT_APPROX_USD_PER_MTOK = 1.0
+
+
+def estimate_cost_usd(model_id: str, tokens_in: int, tokens_out: int) -> float:
+    """Approximate USD from token counts. Used as a fallback when the provider /
+    LiteLLM returns no real cost (custom or self-hosted models its pricing table
+    doesn't know). Conservative by design — a budget guard would rather slightly
+    over-count than treat real spend as $0."""
+    rate = _usd_per_mtok(model_id)
+    if rate is None:
+        rate = _DEFAULT_APPROX_USD_PER_MTOK
+    return max(0, tokens_in + tokens_out) / 1_000_000 * rate
+
+
+def resolve_cost_usd(
+    reported_cost: float | None, model_id: str, tokens_in: int, tokens_out: int
+) -> float:
+    """Prefer the provider/LiteLLM-reported cost; fall back to a token×approx-price
+    estimate when it is missing or non-positive (F3: an unpriced custom model
+    otherwise reports $0, leaving cumulative cost at 0 so the budget bands never
+    fire). Returns 0.0 only for genuinely empty calls (no tokens)."""
+    cost = float(reported_cost or 0.0)
+    if cost > 0.0:
+        return cost
+    return estimate_cost_usd(model_id, tokens_in, tokens_out)
+
+
 def _estimate_savings_usd(
     *, baseline: ModelConfig, chosen: ModelConfig, task: object
 ) -> float | None:
@@ -589,8 +619,12 @@ class ModelRouter:
                 usage = getattr(resp, "usage", None)
                 tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
                 tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
-                # LiteLLM populates _response_cost when its pricing table knows the model
-                cost = float(getattr(resp, "_response_cost", 0.0) or 0.0)
+                # LiteLLM populates _response_cost when its pricing table knows the
+                # model; for custom/self-hosted models it is None → estimate from
+                # tokens so the budget guard still sees real spend (F3).
+                cost = resolve_cost_usd(
+                    getattr(resp, "_response_cost", None), model_cfg.model, tokens_in, tokens_out
+                )
                 return CallResult(
                     role=role,
                     model_used=model_cfg.model,

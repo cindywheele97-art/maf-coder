@@ -187,6 +187,7 @@ maf-coder metrics --markdown
    - **100%** — `budget_mode → paused`: the Scheduler refuses to launch NEW tasks (in-flight tasks drain) + escalates to the Human Gate.
    - **150%** — force-pause regardless of approval.
    To watch the throttle engage, grep `events.jsonl` for `budget_mode_changed` / `budget_alert`, or check `maf-coder mission status` (`budget_mode`).
+   - **Custom/self-hosted models:** the band math is driven by cumulative cost. When LiteLLM can't price a model (custom endpoints like MiMo / DeepSeek / self-hosted), the cost is **estimated from tokens** (≈$1/Mtok floor, or the approx table for known families) so the guard is never blinded by a $0 cost — see `models/router.estimate_cost_usd`. It's an *estimate*, so treat the bands as approximate on those models; tune the floor if your real pricing differs.
 4. **Watch `events.jsonl` live** — kill it the moment it loops or thrashes; cost is real per LLM call.
 5. **Expect failure on run #1.** This is the first time the full loop executes against real models. Capture what breaks (the EventLog is your forensic record) and iterate.
 

@@ -10,6 +10,8 @@ from .router import (
     RouterConfig,
     SmartRouterConfig,
     SmartRouterRoleFlag,
+    estimate_cost_usd,
+    resolve_cost_usd,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "RouterConfig",
     "SmartRouterConfig",
     "SmartRouterRoleFlag",
+    "estimate_cost_usd",
+    "resolve_cost_usd",
 ]

@@ -16,6 +16,8 @@ from maf_coder.models import (
     ModelRouter,
     ProviderForbiddenError,
     RoleNotConfiguredError,
+    estimate_cost_usd,
+    resolve_cost_usd,
 )
 from maf_coder.models.router import _provider_of
 
@@ -266,3 +268,34 @@ def test_shipped_config_loads_and_is_valid() -> None:
     # Usable: every role the MissionDriver constructs resolves a provider.
     for role in ("orchestrator", "coder_worker", "review_validator", "behavior_validator"):
         assert router.provider_for_role(role)
+
+
+# -- F3: cost estimation for models LiteLLM can't price ---------------------
+
+
+class TestCostEstimation:
+    def test_known_model_uses_table_price(self) -> None:
+        # gpt-5 ≈ $5/Mtok; 1M tokens → $5.
+        assert estimate_cost_usd("openai/gpt-5", 1_000_000, 0) == 5.0
+        # opus ≈ $15/Mtok; 0.5M in + 0.5M out = 1M → $15.
+        assert estimate_cost_usd("anthropic/claude-opus-4-7", 500_000, 500_000) == 15.0
+
+    def test_unknown_model_uses_nonzero_default(self) -> None:
+        # MiMo / DeepSeek / self-hosted aren't in the table → conservative $1/Mtok.
+        assert estimate_cost_usd("mimo/custom-v1", 1_000_000, 0) == 1.0
+        assert estimate_cost_usd("deepseek/local-endpoint", 2_000_000, 0) == 2.0
+
+    def test_zero_tokens_is_zero(self) -> None:
+        assert estimate_cost_usd("mimo/custom-v1", 0, 0) == 0.0
+
+    def test_resolve_prefers_reported_cost(self) -> None:
+        # A real reported cost wins over the estimate.
+        assert resolve_cost_usd(0.05, "mimo/custom-v1", 1_000_000, 0) == 0.05
+
+    def test_resolve_falls_back_when_unpriced(self) -> None:
+        # None or 0 reported (unpriced model) → token estimate, never silently 0.
+        assert resolve_cost_usd(None, "mimo/custom-v1", 1_000_000, 0) == 1.0
+        assert resolve_cost_usd(0.0, "mimo/custom-v1", 1_000_000, 0) == 1.0
+
+    def test_resolve_zero_when_no_cost_and_no_tokens(self) -> None:
+        assert resolve_cost_usd(None, "mimo/custom-v1", 0, 0) == 0.0
