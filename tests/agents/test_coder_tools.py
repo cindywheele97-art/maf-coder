@@ -25,6 +25,7 @@ from maf_coder.agents.tools.coder_tools import (
     make_edit_file,
     make_git_checkout,
     make_git_diff,
+    make_git_log,
     make_git_show,
     make_git_status,
     make_read_file,
@@ -291,6 +292,34 @@ class TestGit:
         ctx = _ctx(sandbox, store, router)
         with pytest.raises(PermissionDeniedError):
             await make_git_checkout(ctx)(target="main")
+
+    # NF1 — agent-controlled args must not inject shell commands. The default
+    # LocalShellSandbox runs on the host, so an unquoted ';' would execute. We
+    # prove the fix by side effect: the injected `touch` must NOT create the file.
+
+    @pytest.mark.asyncio
+    async def test_git_log_arg_injection_neutralized(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter, tmp_path: Path
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        await make_git_log(ctx)(args=["; touch INJECTED_LOG"])
+        assert not (tmp_path / "ws" / "INJECTED_LOG").exists()
+
+    @pytest.mark.asyncio
+    async def test_git_diff_arg_injection_neutralized(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter, tmp_path: Path
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        await make_git_diff(ctx)(args=["; touch INJECTED_DIFF"])
+        assert not (tmp_path / "ws" / "INJECTED_DIFF").exists()
+
+    @pytest.mark.asyncio
+    async def test_git_checkout_path_injection_neutralized(
+        self, sandbox: LocalShellSandbox, store: ArtifactStore, router: ModelRouter, tmp_path: Path
+    ) -> None:
+        ctx = _ctx(sandbox, store, router)
+        await make_git_checkout(ctx)(target="--", paths=["; touch INJECTED_CO"])
+        assert not (tmp_path / "ws" / "INJECTED_CO").exists()
 
 
 # ---------------------------------------------------------------------------

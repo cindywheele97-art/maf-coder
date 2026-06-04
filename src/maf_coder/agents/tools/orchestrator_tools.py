@@ -11,6 +11,7 @@ wiring passes the real `Scheduler` instance constructed by `MissionDriver`.
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -384,7 +385,9 @@ def make_create_checkpoint(ctx: TaskContext) -> Any:
         check_tool_allowed(ctx.task.permission, "create_checkpoint")
         git_tag = f"mission/{ctx.mission_id}/{milestone_id}"
         # Best-effort git tag in the sandbox. Non-fatal if it fails.
-        tag_res = await ctx.sandbox.exec(f"git tag -f {git_tag}", cwd="/workspace", timeout_sec=30)
+        tag_res = await ctx.sandbox.exec(
+            f"git tag -f {shlex.quote(git_tag)}", cwd="/workspace", timeout_sec=30
+        )
         try:
             snapshot_id = await ctx.sandbox.commit_snapshot(image_tag=git_tag)
         except Exception as e:

@@ -16,6 +16,7 @@ The full Coder surface:
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Callable
 from typing import Any
 
@@ -254,7 +255,7 @@ def make_git_diff(ctx: TaskContext) -> Any:
     async def git_diff(args: list[str] | None = None) -> str:
         """Run `git diff` with optional args. Default: HEAD."""
         check_tool_allowed(ctx.task.permission, "git_diff")
-        rest = " ".join(args or ["HEAD"])
+        rest = " ".join(shlex.quote(a) for a in (args or ["HEAD"]))
         cmd = f"git diff {rest}"
         t0 = time_block()
         res = await ctx.sandbox.exec(cmd, cwd="/workspace", timeout_sec=60)
@@ -288,7 +289,7 @@ def make_git_log(ctx: TaskContext) -> Any:
     async def git_log(args: list[str] | None = None) -> str:
         """Run `git log` with optional args. Default: -10 --oneline."""
         check_tool_allowed(ctx.task.permission, "git_log")
-        rest = " ".join(args or ["-10", "--oneline"])
+        rest = " ".join(shlex.quote(a) for a in (args or ["-10", "--oneline"]))
         t0 = time_block()
         res = await ctx.sandbox.exec(f"git log {rest}", cwd="/workspace", timeout_sec=60)
         record_tool_call(
@@ -315,8 +316,8 @@ def make_git_checkout(ctx: TaskContext) -> Any:
             raise PermissionDeniedError(
                 target, f"git_checkout target {target!r} looks like a branch name"
             )
-        path_args = " ".join(paths or [])
-        cmd = f"git checkout {target} {path_args}".strip()
+        path_args = " ".join(shlex.quote(p) for p in (paths or []))
+        cmd = f"git checkout {shlex.quote(target)} {path_args}".strip()
         t0 = time_block()
         res = await ctx.sandbox.exec(cmd, cwd="/workspace", timeout_sec=60)
         record_tool_call(

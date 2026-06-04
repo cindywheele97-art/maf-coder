@@ -411,6 +411,30 @@ class TestCreateCheckpoint:
         kinds = [e.kind for e in ctx.event_log.iter_events()]
         assert "checkpoint_created" in kinds
 
+    @pytest.mark.asyncio
+    async def test_milestone_id_does_not_inject_into_git_tag(self, store, router) -> None:
+        """NF1: a metacharacter-laden milestone_id must be a single quoted token in
+        the `git tag` command, not a command separator."""
+        import shlex
+
+        from maf_coder.agents.results import CommandResult
+        from maf_coder.agents.tools.orchestrator_tools import make_create_checkpoint
+
+        recorded: list[str] = []
+
+        class _RecordingSandbox(_StubSandbox):
+            async def exec(self, cmd, *, cwd="/workspace", timeout_sec=60):  # type: ignore[no-untyped-def]
+                recorded.append(cmd)
+                return CommandResult(
+                    command=cmd, exit_code=0, stdout="", stderr="", duration_sec=0.0
+                )
+
+        ctx = _orch_ctx(store, router, _RecordingSandbox())
+        await make_create_checkpoint(ctx)(milestone_id="m1; touch PWNED")
+        tag_cmds = [c for c in recorded if c.startswith("git tag")]
+        assert tag_cmds, "git tag command was not issued"
+        assert shlex.split(tag_cmds[0]) == ["git", "tag", "-f", "mission/m-orch/m1; touch PWNED"]
+
 
 def test_factory_list_completeness(store, router) -> None:
     ctx = _orch_ctx(store, router, _StubSandbox())
