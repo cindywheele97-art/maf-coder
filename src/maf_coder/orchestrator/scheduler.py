@@ -27,7 +27,7 @@ from ..agents.base import AgentResult, BaseAgent
 from ..agents.results import TaskHandle
 from ..blackboard import ArtifactStore
 from ..blackboard.event_log import Event, EventKind, EventLog
-from ..models import ModelRouter
+from ..models import ModelRouter, provider_of
 from ..sandbox import SandboxClient
 from ..schemas import Role, Task, VerdictResult
 from ..validators.arbitration import (
@@ -259,6 +259,46 @@ class Scheduler:
         )
         rec.done_event.set()
 
+    # -- 异-provider reconciliation (F2 / soul.md §3.5) --------------------
+
+    def _reconcile_coder_provider(self, result: AgentResult[Any]) -> None:
+        """Sync ``coder_provider_in_use`` to the provider the Coder actually ran on.
+
+        ``coder_provider_in_use`` is derived once from the Coder's config primary,
+        but the smart router (or a config change) can land the Coder on a different
+        provider. If so, the validators' "≠ Coder provider" check would target the
+        wrong provider and a validator could run on the SAME provider as the Coder —
+        silently weakening the validator-independence invariant (soul.md §3.5).
+
+        Updating the in-memory anchor fixes validators dispatched later this
+        milestone (they depend on the Coder, so none have run yet); persisting to
+        mission_state makes it durable + visible (``mission status``). No-op when
+        the provider already matches.
+        """
+        model_used = getattr(result, "model_used", "") or ""
+        if not model_used:
+            return
+        actual = provider_of(model_used)
+        if actual == self.coder_provider_in_use:
+            return
+        logger.warning(
+            "Coder ran on provider %r (model %s), not the assumed %r; reconciling "
+            "coder_provider_in_use so validators enforce异-provider against the real "
+            "provider (soul.md §3.5).",
+            actual,
+            model_used,
+            self.coder_provider_in_use,
+        )
+        self.coder_provider_in_use = actual
+        try:
+            ms = self.store.load_mission_state()
+            if ms.coder_provider_in_use != actual:
+                self.store.save_mission_state(
+                    ms.model_copy(update={"coder_provider_in_use": actual})
+                )
+        except Exception:
+            logger.exception("Scheduler: failed to persist reconciled coder_provider_in_use")
+
     # -- Conflict arbitration (Phase D §D4) --------------------------------
 
     def _arbitrate_completed_behavior(self, rec: _TaskRecord) -> None:
@@ -486,6 +526,12 @@ class Scheduler:
                 actor=owner.value,
                 duration_sec=duration,
             )
+            # F2 / soul.md §3.5 — sync the异-provider anchor to the provider the
+            # Coder ACTUALLY ran on. Validators depend on the Coder, so they are
+            # dispatched after this and will then enforce异-provider against the
+            # real provider, not the stale config-primary guess.
+            if owner is Role.CODER_WORKER:
+                self._reconcile_coder_provider(result)
             # Phase D §D4 — a completed behavior_validator task now has both
             # verdicts on disk; reconcile them and record the arbitration decision.
             if owner is Role.BEHAVIOR_VALIDATOR:

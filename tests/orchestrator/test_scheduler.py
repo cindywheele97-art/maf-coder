@@ -47,11 +47,20 @@ class _FakeAgent(BaseAgent[str]):
     prompt_path = Path("prompts/coder_worker.md")
 
     def __init__(
-        self, *, store, event_log, router, sandbox, outcome: str = "ok", fail_first_n: int = 0
+        self,
+        *,
+        store,
+        event_log,
+        router,
+        sandbox,
+        outcome: str = "ok",
+        fail_first_n: int = 0,
+        model_used: str = "anthropic/x",
     ) -> None:
         super().__init__(store=store, event_log=event_log, router=router, sandbox=sandbox)
         self.outcome = outcome
         self.fail_first_n = fail_first_n
+        self.model_used = model_used
         self.calls = 0
 
     def build_tools(self, ctx: TaskContext) -> list[Any]:
@@ -80,7 +89,7 @@ class _FakeAgent(BaseAgent[str]):
             tokens_out=0,
             cost_usd=0.0,
             latency_sec=0.0,
-            model_used="anthropic/x",
+            model_used=self.model_used,
             fallback_used=False,
             tools_invoked=[],
             errored=errored,
@@ -468,5 +477,119 @@ async def test_normal_mode_uses_full_retry_budget(tmp_path, router, store) -> No
         await sched.add_task(_task("t1", retry=2))
         await sched.run()
         assert agent.calls == 3
+    finally:
+        await sandbox.stop()
+
+
+# -- F2 / soul.md §3.5 — coder_provider_in_use reconciliation ---------------
+
+
+def _save_state_with_provider(store: ArtifactStore, provider: str) -> None:
+    from datetime import UTC, datetime
+
+    store.save_mission_state(
+        MissionState(
+            mission_id=store.mission_id,
+            started_at=datetime.now(UTC),
+            coder_provider_in_use=provider,
+        )
+    )
+
+
+def _coder_scheduler(store, router, sandbox, agent_factory, *, coder_provider: str) -> Scheduler:
+    return Scheduler(
+        store=store,
+        event_log=store.event_log(),
+        router=router,
+        sandbox=sandbox,
+        agent_factory=agent_factory,
+        mission_id=store.mission_id,
+        coder_provider_in_use=coder_provider,
+    )
+
+
+@pytest.mark.asyncio
+async def test_coder_provider_reconciled_when_actual_differs(tmp_path, router, store) -> None:
+    """If the Coder actually ran on a different provider than the assumed one, the
+    scheduler reconciles coder_provider_in_use (in-memory + persisted)."""
+    _save_state_with_provider(store, "anthropic")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        coder = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            model_used="openai/gpt-5",  # NOT the assumed anthropic
+        )
+        sched = _coder_scheduler(
+            store, router, sandbox, {Role.CODER_WORKER: lambda: coder},
+            coder_provider="anthropic",
+        )
+        await sched.add_task(_task("t1"))
+        await sched.run()
+        assert sched.coder_provider_in_use == "openai"
+        assert store.load_mission_state().coder_provider_in_use == "openai"
+    finally:
+        await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_coder_provider_unchanged_when_same(tmp_path, router, store) -> None:
+    """No reconciliation when the Coder ran on the assumed provider."""
+    _save_state_with_provider(store, "anthropic")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        coder = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            model_used="anthropic/claude-sonnet-4-6",
+        )
+        sched = _coder_scheduler(
+            store, router, sandbox, {Role.CODER_WORKER: lambda: coder},
+            coder_provider="anthropic",
+        )
+        await sched.add_task(_task("t1"))
+        await sched.run()
+        assert sched.coder_provider_in_use == "anthropic"
+    finally:
+        await sandbox.stop()
+
+
+@pytest.mark.asyncio
+async def test_validator_sees_reconciled_coder_provider(tmp_path, router, store) -> None:
+    """The payoff: a validator dispatched after the Coder enforces 异-provider
+    against the provider the Coder ACTUALLY used, not the stale config guess."""
+    _save_state_with_provider(store, "anthropic")
+    sandbox = LocalShellSandbox()
+    await sandbox.start(workspace_mount=tmp_path / "ws")
+    try:
+        class _CaptureValidator(_FakeAgent):
+            role = Role.REVIEW_VALIDATOR
+
+            def __init__(self, **kw):  # type: ignore[no-untyped-def]
+                super().__init__(**kw)
+                self.seen_provider: str | None = "UNSET"
+
+            async def run(self, task, *, mission_id, coder_provider_in_use=None):  # type: ignore[override]
+                self.seen_provider = coder_provider_in_use
+                return await super().run(
+                    task, mission_id=mission_id, coder_provider_in_use=coder_provider_in_use
+                )
+
+        coder = _FakeAgent(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+            model_used="openai/gpt-5",
+        )
+        validator = _CaptureValidator(
+            store=store, event_log=store.event_log(), router=router, sandbox=sandbox,
+        )
+        sched = _coder_scheduler(
+            store, router, sandbox,
+            {Role.CODER_WORKER: lambda: coder, Role.REVIEW_VALIDATOR: lambda: validator},
+            coder_provider="anthropic",
+        )
+        await sched.add_task(_task("t-coder"))
+        await sched.add_task(_task("t-review", depends_on=["t-coder"], owner=Role.REVIEW_VALIDATOR))
+        await sched.run()
+        assert validator.seen_provider == "openai"  # reconciled, not the stale "anthropic"
     finally:
         await sandbox.stop()

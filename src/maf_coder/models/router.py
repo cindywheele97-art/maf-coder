@@ -165,6 +165,11 @@ def _provider_of(model_id: str) -> str:
     return "openai"
 
 
+# Public alias — the LiteLLM provider prefix of a model id, used to reconcile the
+# Coder's actual provider for the异-provider rule (see scheduler).
+provider_of = _provider_of
+
+
 # SR-3 observability scaffolding: a DELIBERATELY tiny, approximate $/Mtok table
 # used only to estimate "what did routing save vs the baseline primary". This is
 # NOT a billing source of truth — real cost comes from LiteLLM's `_response_cost`

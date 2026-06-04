@@ -11,6 +11,7 @@ from .router import (
     SmartRouterConfig,
     SmartRouterRoleFlag,
     estimate_cost_usd,
+    provider_of,
     resolve_cost_usd,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "SmartRouterConfig",
     "SmartRouterRoleFlag",
     "estimate_cost_usd",
+    "provider_of",
     "resolve_cost_usd",
 ]
