@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 import tempfile
 import time
@@ -561,13 +562,18 @@ class DockerSandbox(SandboxClient):
 
     async def write_file(self, container_path: str, content: str) -> None:
         norm = self._resolve(container_path)
+        norm_q = shlex.quote(str(norm))
         # Use a heredoc-style write through `tee` to keep this self-contained.
         # For larger files / binary, dockerpy's `put_archive` would be faster.
-        result = await self.exec(f"mkdir -p {os.path.dirname(str(norm))}", timeout_sec=10)
+        # Paths are shell-quoted so a metacharacter-laden container_path can't
+        # inject a command inside the container (NF1).
+        result = await self.exec(
+            f"mkdir -p {shlex.quote(os.path.dirname(str(norm)))}", timeout_sec=10
+        )
         if result.exit_code != 0:
             raise SandboxError(f"mkdir failed: {result.stderr}")
-        tmp = f"{norm}.tmp.{uuid.uuid4().hex[:8]}"
-        cmd = f"cat > {tmp} && mv {tmp} {norm}"
+        tmp_q = shlex.quote(f"{norm}.tmp.{uuid.uuid4().hex[:8]}")
+        cmd = f"cat > {tmp_q} && mv {tmp_q} {norm_q}"
         result = await self.exec(cmd, stdin=content, timeout_sec=30)
         if result.exit_code != 0:
             raise SandboxError(f"write_file failed: {result.stderr}")
@@ -576,13 +582,14 @@ class DockerSandbox(SandboxClient):
         self, container_path: str, max_bytes: int = DEFAULT_MAX_READ_BYTES
     ) -> FileContent:
         norm = self._resolve(container_path)
+        norm_q = shlex.quote(str(norm))  # shell-quoted: no injection via the path (NF1)
         # Discover size first to set the truncation flag correctly.
-        size_res = await self.exec(f"stat -c %s {norm} || stat -f %z {norm}", timeout_sec=10)
+        size_res = await self.exec(f"stat -c %s {norm_q} || stat -f %z {norm_q}", timeout_sec=10)
         try:
             size = int(size_res.stdout.strip())
         except (ValueError, AttributeError):
             size = 0
-        head_res = await self.exec(f"head -c {max_bytes} {norm}", timeout_sec=30)
+        head_res = await self.exec(f"head -c {max_bytes} {norm_q}", timeout_sec=30)
         if head_res.exit_code != 0:
             raise SandboxError(f"read_file failed: {head_res.stderr}")
         truncated = size > max_bytes
