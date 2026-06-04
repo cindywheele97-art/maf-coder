@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from ..blackboard import ArtifactStore
 from ..blackboard.event_log import EventLog
-from ..models import ModelConfig, ModelRouter
+from ..models import ModelConfig, ModelRouter, resolve_cost_usd
 from ..schemas import Role, Task
 from . import _sdk
 from .errors import ToolError
@@ -461,7 +461,12 @@ class BaseAgent(ABC, Generic[T]):
         usage = getattr(sdk_result, "usage", None)
         tokens_in = int(getattr(usage, "input_tokens", 0) or 0)
         tokens_out = int(getattr(usage, "output_tokens", 0) or 0)
-        cost = float(getattr(sdk_result, "cost_usd", 0.0) or 0.0)
+        # The SDK reports cost_usd only for models LiteLLM can price; custom /
+        # self-hosted models report nothing → estimate from tokens so the budget
+        # guard is never blinded during a mission (F3).
+        cost = resolve_cost_usd(
+            getattr(sdk_result, "cost_usd", None), model_id, tokens_in, tokens_out
+        )
         return _RawResult(
             final_output=final_output,
             tokens_in=tokens_in,

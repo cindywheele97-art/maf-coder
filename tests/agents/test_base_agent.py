@@ -478,3 +478,74 @@ async def test_cost_conscious_non_validator_unaffected(
     )
     res = await agent.run(_make_task(), mission_id=store.mission_id)
     assert res.model_used == "anthropic/claude-test"
+
+
+# ---------------------------------------------------------------------------
+# F3: budget guard must see cost for models LiteLLM can't price (mission path)
+# ---------------------------------------------------------------------------
+
+
+class _RealSDKAgent(BaseAgent[str]):
+    """A BaseAgent that does NOT override _execute_sdk, so the real cost path runs."""
+
+    role = Role.CODER_WORKER
+
+    def __init__(self, *, prompt_path: Path, **kw):  # type: ignore[no-untyped-def]
+        self.prompt_path = prompt_path
+        super().__init__(**kw)
+
+    def build_tools(self, ctx: TaskContext) -> list:
+        return []
+
+    def build_first_user_message(self, ctx: TaskContext) -> str:
+        return "go"
+
+    def parse_output(self, raw_output: str, ctx: TaskContext) -> str:
+        return raw_output.strip()
+
+    def _null_output(self) -> str:
+        return ""
+
+
+@pytest.mark.asyncio
+async def test_execute_sdk_estimates_cost_for_unpriced_model(
+    tmp_path, store, event_log, prompt_file, monkeypatch
+) -> None:
+    """A custom model the SDK can't price still yields a non-zero cost_usd, so the
+    budget guard sees real spend on the mission path (F3)."""
+    from types import SimpleNamespace
+
+    import maf_coder.agents._sdk as sdk
+
+    async def fake_run(agent, msg):  # type: ignore[no-untyped-def]
+        # No cost_usd attribute → getattr(..., None) → token estimate kicks in.
+        return SimpleNamespace(
+            final_output="ok",
+            usage=SimpleNamespace(input_tokens=600_000, output_tokens=400_000),
+        )
+
+    monkeypatch.setattr(sdk, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk, "wrap_for_sdk", lambda t: t)
+    monkeypatch.setattr(sdk, "Agent", lambda **kw: object())
+    monkeypatch.setattr(sdk, "LitellmModel", None)
+    monkeypatch.setattr(sdk, "ModelSettings", None)
+    monkeypatch.setattr(sdk, "Runner", SimpleNamespace(run=fake_run))
+
+    cfg = tmp_path / "custom.yaml"
+    cfg.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  coder_worker:\n"
+        "    primary: {model: mimo/custom-v1, temperature: 0.1, max_tokens: 1000}\n"
+        "    fallback: []\n"
+    )
+    agent = _RealSDKAgent(
+        prompt_path=prompt_file,
+        store=store,
+        event_log=event_log,
+        router=ModelRouter(cfg),
+        sandbox=_DummySandbox(),
+    )
+    res = await agent.run(_make_task(), mission_id=store.mission_id)
+    # 1M tokens at the $1/Mtok default = $1.0 — crucially NOT $0.
+    assert res.cost_usd == 1.0
