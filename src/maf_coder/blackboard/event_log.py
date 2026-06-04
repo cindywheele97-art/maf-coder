@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from enum import Enum
@@ -36,6 +37,25 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
+
+# Process-wide, path-keyed append locks. `ArtifactStore.event_log()` returns a
+# NEW EventLog per call, so all instances writing the same `events.jsonl` must
+# share one lock to serialize appends. Keyed by the resolved path so equivalent
+# paths collapse to the same lock. (Scope: cross-thread safety within the single
+# per-mission process — the architecture is one process per mission, so no
+# cross-process writers contend on a single log.)
+_APPEND_LOCKS: dict[str, threading.Lock] = {}
+_APPEND_LOCKS_GUARD = threading.Lock()
+
+
+def _append_lock_for(path: Path) -> threading.Lock:
+    key = str(path)
+    with _APPEND_LOCKS_GUARD:
+        lock = _APPEND_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _APPEND_LOCKS[key] = lock
+        return lock
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +147,11 @@ class EventLog:
     bound to a mission's `events.jsonl`, or construct directly with a path
     for tests / non-mission use.
 
-    Append safety: Python's text-mode file with `os.O_APPEND` is atomic for
-    writes smaller than PIPE_BUF (typically 4096 bytes) on POSIX. Event lines
-    are normally well under that. If you log >4KB events you may see interleaved
-    writes under heavy concurrency — but Phase A doesn't have concurrent writers.
+    Append safety: a single `open("a")` write can interleave with a concurrent
+    writer for lines larger than PIPE_BUF (~4KB), corrupting the jsonl. Appends
+    are therefore serialized by a **process-wide, path-keyed lock** (see
+    `_append_lock_for`) shared by every EventLog instance for the same file, so
+    concurrent writers (e.g. a future thread-pool hook) can never tear a line.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
@@ -138,13 +159,21 @@ class EventLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.touch()
+        # Share one lock across all instances writing this file (keyed by the
+        # resolved path so relative/absolute variants collapse together).
+        self._append_lock = _append_lock_for(self.path.resolve())
 
     # -- Core append --------------------------------------------------------
 
     def append(self, event: Event) -> None:
-        """Write one event as a single line of JSON, append-only."""
+        """Write one event as a single line of JSON, append-only.
+
+        Serialized via the shared per-file lock so concurrent appends (cross-
+        thread) never interleave. Uncontended in the single-threaded asyncio
+        loop — the lock only does real work once writers run on multiple threads.
+        """
         line = event.model_dump_json() + "\n"
-        with self.path.open("a", encoding="utf-8") as fh:
+        with self._append_lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(line)
 
     # -- Convenience emitters ----------------------------------------------
