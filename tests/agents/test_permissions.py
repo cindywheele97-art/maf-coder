@@ -86,6 +86,18 @@ class TestCheckNetworkAllowed:
     def test_crates_only_allows_crates_io(self) -> None:
         check_network_allowed(_perm(network=NetworkPolicy.CRATES_ONLY), "https://crates.io/api/v1")
 
+    def test_rejects_non_http_schemes(self) -> None:
+        # Scheme allowlist: file:// (LFI), ftp://, gopher:// must be rejected even
+        # for OPEN policy / otherwise-allowed hosts (SSRF/LFI hardening, bandit B310).
+        for url in (
+            "file:///etc/passwd",
+            "ftp://crates.io/x",
+            "gopher://crates.io/x",
+            "file://crates.io/etc/passwd",
+        ):
+            with pytest.raises(PermissionDeniedError):
+                check_network_allowed(_perm(network=NetworkPolicy.OPEN), url)
+
     def test_crates_only_allows_docs_rs(self) -> None:
         check_network_allowed(
             _perm(network=NetworkPolicy.CRATES_ONLY), "https://docs.rs/serde/latest/"

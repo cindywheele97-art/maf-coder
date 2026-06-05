@@ -47,7 +47,9 @@ _FetchFn = Callable[[str, int], tuple[str, str, int, str]]
 def _http_get_default(url: str, timeout_sec: int) -> tuple[str, str, int, str]:
     """Default urllib-based fetcher. Returns (final_url, content_type, status, body)."""
     req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    with urlopen(req, timeout=timeout_sec) as resp:
+    # Scheme is restricted to http/https by check_network_allowed (run in fetch_url
+    # before this transport), so urlopen can't reach file:// / ftp:// / etc.
+    with urlopen(req, timeout=timeout_sec) as resp:  # nosec B310
         body = resp.read()
         charset = resp.headers.get_content_charset() or "utf-8"
         try:

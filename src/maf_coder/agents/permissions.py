@@ -164,12 +164,19 @@ def check_network_allowed(
     policy = NetworkPolicy(permission.network_policy)
 
     parsed = urlparse(url)
+    # Scheme allowlist: only plain HTTP(S). Blocks file:// (LFI), ftp://, gopher://
+    # and other urllib-supported schemes that could be abused for SSRF/LFI even
+    # against an otherwise-allowed host.
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise PermissionDeniedError(url, f"URL scheme {scheme!r} not allowed (only http/https)")
     host = (parsed.hostname or "").lower()
     if not host:
         raise PermissionDeniedError(url, "URL has no host component")
 
-    # Hard global denylist (apply for ALL policies, even OPEN)
-    if host in {"localhost", "0.0.0.0"} or host.endswith(".local") or _is_private_ip(host):
+    # Hard global denylist (apply for ALL policies, even OPEN). "0.0.0.0" here is
+    # BLOCKED, not bound — bandit's B104 (bind-all-interfaces) is a false positive.
+    if host in {"localhost", "0.0.0.0"} or host.endswith(".local") or _is_private_ip(host):  # nosec B104
         raise PermissionDeniedError(url, f"host {host} blocked by global SSRF denylist")
 
     if policy is NetworkPolicy.NONE:

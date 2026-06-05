@@ -36,6 +36,8 @@ pytest -k "completeness" -v             # by test name pattern
 ruff check src tests scripts            # lint
 ruff format src tests scripts           # format
 mypy                                    # type check (strict mode per pyproject)
+bandit -r src/maf_coder --severity-level medium --confidence-level medium  # SAST
+pip-audit --skip-editable               # dependency CVE audit
 python scripts/smoke_test.py --dry-run  # plan check, no API calls
 ```
 
@@ -90,7 +92,7 @@ When implementing a phase, follow this sequence:
    - Read the relevant prompt in `prompts/` if the work involves an agent role's behavior.
    - Mirror the closest existing analog (e.g. a new validator mirrors `agents/review.py`; new tools mirror `agents/tools/review_tools.py`).
    - Implement + write tests.
-4. Gate before every commit: `pytest && ruff check src tests && mypy src/maf_coder`. `main` must stay green.
+4. Gate before every commit: `pytest && ruff check src tests && mypy src/maf_coder && bandit -r src/maf_coder --severity-level medium --confidence-level medium && pip-audit --skip-editable`. `main` must stay green. CI (`.github/workflows/ci.yml`) runs the same gate.
 
 Respect phase boundaries — each phase has independent exit criteria. Don't pull Phase E/F/G work into the current phase; the Build Plan and execution plan define what's in scope now.
 
