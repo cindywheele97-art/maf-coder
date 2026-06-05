@@ -549,3 +549,66 @@ async def test_execute_sdk_estimates_cost_for_unpriced_model(
     res = await agent.run(_make_task(), mission_id=store.mission_id)
     # 1M tokens at the $1/Mtok default = $1.0 — crucially NOT $0.
     assert res.cost_usd == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Custom per-model endpoints (MiMo / DeepSeek) — mission path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_sdk_passes_custom_endpoint_to_litellm(
+    tmp_path, store, event_log, prompt_file, monkeypatch
+) -> None:
+    """A coder role configured with api_base + api_key_env routes the SDK's
+    LitellmModel to that custom endpoint with the env-resolved key."""
+    from types import SimpleNamespace
+
+    import maf_coder.agents._sdk as sdk
+
+    monkeypatch.setenv("MIMO_TEST_KEY", "sk-fake-mimo")
+    captured: dict[str, object] = {}
+
+    def fake_litellm_model(model, base_url=None, api_key=None, **kw):  # type: ignore[no-untyped-def]
+        captured["model"] = model
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        return object()
+
+    async def fake_run(agent, msg):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            final_output="ok",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )
+
+    monkeypatch.setattr(sdk, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk, "wrap_for_sdk", lambda t: t)
+    monkeypatch.setattr(sdk, "Agent", lambda **kw: object())
+    monkeypatch.setattr(sdk, "LitellmModel", fake_litellm_model)
+    monkeypatch.setattr(sdk, "ModelSettings", None)
+    monkeypatch.setattr(sdk, "Runner", SimpleNamespace(run=fake_run))
+
+    cfg = tmp_path / "mimo.yaml"
+    cfg.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  coder_worker:\n"
+        "    primary:\n"
+        "      model: anthropic/mimo-v2.5-pro\n"
+        "      temperature: 0.2\n"
+        "      max_tokens: 100\n"
+        "      api_base: https://mimo.example/anthropic\n"
+        "      api_key_env: MIMO_TEST_KEY\n"
+        "    fallback: []\n"
+    )
+    agent = _RealSDKAgent(
+        prompt_path=prompt_file,
+        store=store,
+        event_log=event_log,
+        router=ModelRouter(cfg),
+        sandbox=_DummySandbox(),
+    )
+    await agent.run(_make_task(), mission_id=store.mission_id)
+    assert captured["model"] == "anthropic/mimo-v2.5-pro"
+    assert captured["base_url"] == "https://mimo.example/anthropic"
+    assert captured["api_key"] == "sk-fake-mimo"

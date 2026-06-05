@@ -77,6 +77,7 @@ class _StubOrchAgent(OrchestratorAgent):
         temperature: float,
         max_tokens: int,
         ctx,
+        **_kw: object,
     ) -> _RawResult:
         save = next(t for t in tools if t.__name__ == "save_artifact")
         await save(path="plan.md", content="# plan\n- impl feature 1\n")

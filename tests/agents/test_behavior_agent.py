@@ -55,6 +55,7 @@ class _StubBehaviorAgent(BehaviorValidatorAgent):
         temperature: float,
         max_tokens: int,
         ctx,
+        **_kw: object,
     ) -> _RawResult:
         save_verdict = next(t for t in tools if t.__name__ == "save_behavior_verdict")
         await save_verdict(
