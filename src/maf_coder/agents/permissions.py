@@ -237,6 +237,25 @@ def _is_private_ip(host: str) -> bool:
     return _ip_is_blocked(ip)
 
 
+def assert_addr_allowed(ip_str: str) -> None:
+    """Raise PermissionDeniedError if a *resolved* IP literal is an SSRF target.
+
+    The pin-and-connect transport (M2 TOCTOU) resolves a host once, validates
+    each candidate address here, then connects to that exact address — so a DNS
+    rebind between check and connect can't steer the connection to an internal
+    IP. Non-IP input is a no-op (callers only pass resolved sockaddr literals).
+    """
+    candidate = ip_str.split("%", 1)[0]  # strip IPv6 zone id (fe80::1%eth0)
+    try:
+        ip = ipaddress.ip_address(candidate)
+    except ValueError:
+        return
+    if _ip_is_blocked(ip):
+        raise PermissionDeniedError(
+            candidate, f"resolved address {candidate} blocked by SSRF denylist"
+        )
+
+
 def _default_resolver(host: str) -> list[str]:
     """Resolve `host` to all its IPs via the system resolver (A + AAAA)."""
     # info[4] is the sockaddr; element 0 is the address string (v4 and v6).
@@ -259,10 +278,12 @@ def check_resolved_host_safe(
     non-fatal: a host that can't resolve can't be connected to, so we let the
     subsequent fetch surface the error rather than converting it into a denial.
 
-    Note: this is resolve-then-check, so a determined attacker controlling DNS
-    could still rebind between this check and the actual connect (TOCTOU). Full
-    rebinding protection needs pin-and-connect at the socket layer; this closes
-    the realistic case (a host pointing inward) without that complexity.
+    This is a fast pre-check that produces a clean structured denial + egress
+    log before any socket work. The TOCTOU window it used to leave (resolve here,
+    re-resolve at connect) is now closed by the pin-and-connect transport
+    (:func:`~maf_coder.agents.tools.research_tools._safe_create_connection`),
+    which resolves once and connects to that exact validated address via
+    :func:`assert_addr_allowed`.
     """
     if not host:
         return
@@ -340,6 +361,7 @@ def check_command_pattern(permission: Permission, command: str) -> None:
 __all__ = [
     "PathMode",
     "Resolver",
+    "assert_addr_allowed",
     "check_command_pattern",
     "check_network_allowed",
     "check_path_access",

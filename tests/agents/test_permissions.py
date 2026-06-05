@@ -6,6 +6,7 @@ import pytest
 
 from maf_coder.agents.errors import PermissionDeniedError
 from maf_coder.agents.permissions import (
+    assert_addr_allowed,
     check_command_pattern,
     check_network_allowed,
     check_path_access,
@@ -179,6 +180,28 @@ class TestCheckResolvedHostSafe:
 
     def test_empty_host_is_noop(self) -> None:
         check_resolved_host_safe("", resolver=lambda _h: ["169.254.169.254"])
+
+
+class TestAssertAddrAllowed:
+    """M2 TOCTOU — the connect-time guard on a single resolved IP literal."""
+
+    def test_blocks_metadata(self) -> None:
+        with pytest.raises(PermissionDeniedError):
+            assert_addr_allowed("169.254.169.254")
+
+    def test_blocks_rfc1918(self) -> None:
+        with pytest.raises(PermissionDeniedError):
+            assert_addr_allowed("10.1.2.3")
+
+    def test_allows_public(self) -> None:
+        assert_addr_allowed("93.184.216.34")
+
+    def test_strips_ipv6_zone_id(self) -> None:
+        with pytest.raises(PermissionDeniedError):
+            assert_addr_allowed("fe80::1%eth0")
+
+    def test_non_ip_is_noop(self) -> None:
+        assert_addr_allowed("not-an-ip")
 
 
 class TestCheckCommandPattern:
