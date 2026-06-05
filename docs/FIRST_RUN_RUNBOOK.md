@@ -51,6 +51,13 @@ active on a real run.
   host. It **fails loud** if the daemon is down — so **build the image first**:
   `bash scripts/build_sandbox.sh` (first build is 30–60 min). Dry-runs / `mission
   profile` default to **`local`** (they execute no agent code, so no Docker needed).
+  - **Resource + privilege limits (M1).** Every container runs with `network_mode=none`
+    plus bounded resources: `mem_limit` **8g**, `pids_limit` **4096**, `cap_drop=["ALL"]`,
+    and `no-new-privileges` — so a runaway or hostile `cargo build` can't OOM the host,
+    fork-bomb it, or gain privileges. Defaults are generous enough for normal Rust
+    builds; tune via the `DockerSandbox(..., mem_limit=, pids_limit=, nano_cpus=)`
+    constructor (`nano_cpus` CPU cap is off by default). If a legitimate build gets
+    OOM-killed inside the container, raise `mem_limit`.
 - **A throwaway target repo.** Even with Docker, point `--repo` at a fresh
   disposable clone or worktree. If you deliberately use **`--sandbox local`** (host
   shell, **no isolation** — only app-level network policy), a disposable `--repo` is
