@@ -39,6 +39,7 @@ mypy                                    # type check (strict mode per pyproject)
 bandit -r src/maf_coder --severity-level medium --confidence-level medium  # SAST
 pip-audit --skip-editable               # dependency CVE audit
 python scripts/smoke_test.py --dry-run  # plan check, no API calls
+maf-coder preflight --sandbox local     # production-readiness gate (keys/config/docker); inspect-only
 ```
 
 `pytest` should always pass on `main`. If you commit while red, you've broken the bar.

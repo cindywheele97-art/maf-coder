@@ -7,6 +7,24 @@
 
 ---
 
+## 0a. One-command readiness gate — `maf-coder preflight`
+
+Before anything else, run the readiness gate. It's **inspect-only** (no LLM
+calls, no spend) and answers "can this go straight to a real run?" in one pass —
+router config valid + 异-provider rule intact, every provider API key present,
+the target repo profilable, and (for `--sandbox docker`) the daemon reachable +
+the sandbox image built. Each failing check prints the exact remediation; the
+command exits non-zero on NO-GO.
+
+```bash
+maf-coder preflight --repo <throwaway-clone>            # checks docker backend
+maf-coder preflight --repo <throwaway-clone> --sandbox local   # skip docker checks
+```
+
+Resolve every ✗ until it prints **"✓ Preflight GO"**, then proceed.
+
+---
+
 ## 0. ✅ Orchestrator bootstrap (now wired)
 
 Real-mode `start()` now **seeds one `Role.ORCHESTRATOR` task** (`task_id="orchestrate"`,
