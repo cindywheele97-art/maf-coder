@@ -299,26 +299,43 @@ class TestEmbeddedSmoke:
         assert result.observations[0].assertion_id == "f1.a1"
 
 
-class TestWasmSmoke:
+class TestWasmProbe:
+    """Full Node WASM probe: build -> wasm-pack build -> wasm-pack test --node
+    (graceful when no wasm tests) -> per-assertion node checks / import smoke.
+
+    All four shell-outs are module constants we monkeypatch to fake commands so
+    these stay hermetic (no Rust/Node toolchain needed)."""
+
+    @staticmethod
+    def _patch(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        build: str = "true",
+        pack: str = "true",
+        test: str = "true",
+        smoke: str = "true",
+    ) -> None:
+        from maf_coder.validators.probes import wasm as wasm_mod
+
+        monkeypatch.setattr(wasm_mod, "_BUILD_CMD", build)
+        monkeypatch.setattr(wasm_mod, "_PACK_CMD", pack)
+        monkeypatch.setattr(wasm_mod, "_TEST_CMD", test)
+        monkeypatch.setattr(wasm_mod, "_IMPORT_SMOKE_CMD", smoke)
+
     @pytest.mark.asyncio
-    async def test_build_pack_smoke(
+    async def test_full_pass_no_endpoints_runs_import_smoke(
         self,
         sandbox: LocalShellSandbox,
         store: ArtifactStore,
         router: ModelRouter,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Substitute the cargo/wasm-pack build commands with always-succeed
-        # shell so the smoke test doesn't require a Rust toolchain.
-        monkeypatch.setattr(backend_mod, "_async_sleep", lambda *_: None, raising=False)
-        from maf_coder.validators.probes import wasm as wasm_mod
-
-        monkeypatch.setattr(wasm_mod, "_BUILD_CMD", "true")
-        monkeypatch.setattr(wasm_mod, "_PACK_CMD", "true")
+        self._patch(monkeypatch)
         ctx = _ctx(sandbox, store, router)
         spec = BehaviorProbeSpec(strategy="wasm_node_probe")
         result = await WasmNodeProbe().run(ctx, spec, _assertions("f1.a1"))
         assert result.passed is True
+        assert result.observations[0].assertion_id == "f1.a1"
 
     @pytest.mark.asyncio
     async def test_build_fail_writes_evidence(
@@ -328,14 +345,99 @@ class TestWasmSmoke:
         router: ModelRouter,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from maf_coder.validators.probes import wasm as wasm_mod
-
-        monkeypatch.setattr(wasm_mod, "_BUILD_CMD", "false")
+        self._patch(monkeypatch, build="false")
         ctx = _ctx(sandbox, store, router)
-        spec = BehaviorProbeSpec(strategy="wasm_node_probe")
-        result = await WasmNodeProbe().run(ctx, spec, _assertions("f1.a1"))
+        result = await WasmNodeProbe().run(
+            ctx, BehaviorProbeSpec(strategy="wasm_node_probe"), _assertions("f1.a1")
+        )
         assert result.passed is False
         assert "build.stderr.txt" in result.evidence
+
+    @pytest.mark.asyncio
+    async def test_pack_fail_writes_evidence(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._patch(monkeypatch, pack="false")
+        ctx = _ctx(sandbox, store, router)
+        result = await WasmNodeProbe().run(
+            ctx, BehaviorProbeSpec(strategy="wasm_node_probe"), _assertions("f1.a1")
+        )
+        assert result.passed is False
+        assert "wasm_pack.stderr.txt" in result.evidence
+
+    @pytest.mark.asyncio
+    async def test_wasm_test_failure_writes_log(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # `wasm-pack test --node` fails with real test failures (no "no tests"
+        # marker) → fail-closed with the test log captured.
+        self._patch(monkeypatch, test="echo 'test result: FAILED. 1 failed' 1>&2; exit 1")
+        ctx = _ctx(sandbox, store, router)
+        result = await WasmNodeProbe().run(
+            ctx, BehaviorProbeSpec(strategy="wasm_node_probe"), _assertions("f1.a1")
+        )
+        assert result.passed is False
+        assert "wasm_pack_test.log" in result.evidence
+
+    @pytest.mark.asyncio
+    async def test_no_wasm_tests_degrades_gracefully(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A crate with no wasm-bindgen tests must NOT false-fail the probe.
+        self._patch(monkeypatch, test="echo 'no library targets found' 1>&2; exit 1")
+        ctx = _ctx(sandbox, store, router)
+        result = await WasmNodeProbe().run(
+            ctx, BehaviorProbeSpec(strategy="wasm_node_probe"), _assertions("f1.a1")
+        )
+        assert result.passed is True
+
+    @pytest.mark.asyncio
+    async def test_import_smoke_failure_marks_assertion(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # build/pack/test pass, but the generated package fails to import.
+        self._patch(monkeypatch, smoke="echo 'cannot find module' 1>&2; exit 1")
+        ctx = _ctx(sandbox, store, router)
+        result = await WasmNodeProbe().run(
+            ctx, BehaviorProbeSpec(strategy="wasm_node_probe"), _assertions("f1.a1")
+        )
+        assert result.passed is False
+        assert "f1.a1.stderr.txt" in result.evidence
+
+    @pytest.mark.asyncio
+    async def test_endpoints_drive_per_assertion(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._patch(monkeypatch)
+        ctx = _ctx(sandbox, store, router)
+        spec = BehaviorProbeSpec(
+            strategy="wasm_node_probe", endpoints_to_probe=["true", "false"]
+        )
+        result = await WasmNodeProbe().run(ctx, spec, _assertions("f1.a1", "f1.a2"))
+        assert result.passed is False
+        assert result.observations[0].matched is True
+        assert result.observations[1].matched is False
+        assert "f1.a2.stderr.txt" in result.evidence
 
 
 # ---------------------------------------------------------------------------
