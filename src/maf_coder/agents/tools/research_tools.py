@@ -33,8 +33,10 @@ from .._sdk import function_tool
 from ..base import TaskContext
 from ..errors import ExternalContentError, PermissionDeniedError, ToolError
 from ..permissions import (
+    Resolver,
     check_network_allowed,
     check_path_access,
+    check_resolved_host_safe,
     check_tool_allowed,
 )
 from ..results import CommandResult, GrepMatch, SanitizedContent
@@ -126,11 +128,24 @@ def make_fetch_url(
     *,
     fetcher: _FetchFn | None = None,
     domain_whitelist: list[str] | None = None,
+    resolver: Resolver | None = None,
 ) -> Any:
-    """Build the fetch_url tool. `fetcher` is injectable for testing."""
+    """Build the fetch_url tool.
+
+    `fetcher` and `resolver` are injectable for testing; production callers
+    leave them unset (real urllib transport + system DNS resolver).
+    """
+
+    def _resolve_check(host: str) -> None:
+        # M2: reject hosts that resolve to an SSRF target (private/metadata IP).
+        if resolver is None:
+            check_resolved_host_safe(host)
+        else:
+            check_resolved_host_safe(host, resolver=resolver)
 
     def _validate_hop(hop_url: str) -> None:
         check_network_allowed(ctx.task.permission, hop_url, domain_whitelist)
+        _resolve_check((urlparse(hop_url).hostname or "").lower())
 
     transport = fetcher or _make_validating_fetcher(_validate_hop)
 
@@ -155,6 +170,7 @@ def make_fetch_url(
         check_tool_allowed(ctx.task.permission, "fetch_url")
         try:
             check_network_allowed(ctx.task.permission, url, domain_whitelist)
+            _resolve_check((urlparse(url).hostname or "").lower())
         except ToolError:
             parsed = urlparse(url)
             ctx.event_log.log_egress_request(
@@ -507,14 +523,17 @@ def build_research_tools(
     *,
     fetcher: _FetchFn | None = None,
     domain_whitelist: list[str] | None = None,
+    resolver: Resolver | None = None,
 ) -> list[Any]:
     """Build the full set of Research Worker tools bound to `ctx`.
 
-    `fetcher` and `domain_whitelist` are optional injection points used by
-    tests; production callers should leave them unset.
+    `fetcher`, `domain_whitelist`, and `resolver` are optional injection points
+    used by tests; production callers should leave them unset.
     """
     return [
-        make_fetch_url(ctx, fetcher=fetcher, domain_whitelist=domain_whitelist),
+        make_fetch_url(
+            ctx, fetcher=fetcher, domain_whitelist=domain_whitelist, resolver=resolver
+        ),
         make_save_research_note(ctx),
         make_save_code_map(ctx),
         make_save_dependency_brief(ctx),

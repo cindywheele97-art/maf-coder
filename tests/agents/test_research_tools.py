@@ -10,6 +10,7 @@ import http.client
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import Request
 
 import pytest
@@ -20,7 +21,7 @@ from maf_coder.agents.errors import (
     PermissionDeniedError,
     ToolError,
 )
-from maf_coder.agents.permissions import check_network_allowed
+from maf_coder.agents.permissions import check_network_allowed, check_resolved_host_safe
 from maf_coder.agents.tools.research_tools import (
     _make_validating_fetcher,
     _validating_opener,
@@ -142,6 +143,11 @@ def _stub_fetcher(*, body: str, content_type: str = "text/html", status: int = 2
     return fn
 
 
+def _public_resolver(host: str) -> list[str]:
+    """Hermetic DNS stub: every host resolves to a public IP (M2 check passes)."""
+    return ["1.1.1.1"]
+
+
 class TestFetchUrl:
     @pytest.mark.asyncio
     async def test_ok_path_sanitizes_and_logs(
@@ -152,7 +158,7 @@ class TestFetchUrl:
     ) -> None:
         ctx = _ctx(sandbox, store, router)
         fetcher = _stub_fetcher(body="<p>safe</p><script>x()</script>")
-        tool = make_fetch_url(ctx, fetcher=fetcher)
+        tool = make_fetch_url(ctx, fetcher=fetcher, resolver=_public_resolver)
         result = await tool(url="https://crates.io/crates/serde")
         assert "x()" not in result.content
         assert "safe" in result.content
@@ -170,7 +176,7 @@ class TestFetchUrl:
         router: ModelRouter,
     ) -> None:
         ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.NONE)
-        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""))
+        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""), resolver=_public_resolver)
         with pytest.raises(PermissionDeniedError):
             await tool(url="https://crates.io/")
         egress = [
@@ -187,7 +193,7 @@ class TestFetchUrl:
         router: ModelRouter,
     ) -> None:
         ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.CRATES_ONLY)
-        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""))
+        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""), resolver=_public_resolver)
         with pytest.raises(PermissionDeniedError):
             await tool(url="https://evil.example.com/")
         # crates.io itself is allowed
@@ -201,7 +207,12 @@ class TestFetchUrl:
         router: ModelRouter,
     ) -> None:
         ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.WHITELIST)
-        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""), domain_whitelist=["example.com"])
+        tool = make_fetch_url(
+            ctx,
+            fetcher=_stub_fetcher(body=""),
+            domain_whitelist=["example.com"],
+            resolver=_public_resolver,
+        )
         await tool(url="https://docs.example.com/")
         with pytest.raises(PermissionDeniedError):
             await tool(url="https://other.com/")
@@ -217,7 +228,7 @@ class TestFetchUrl:
             raise ConnectionError("DNS")
 
         ctx = _ctx(sandbox, store, router)
-        tool = make_fetch_url(ctx, fetcher=boom)
+        tool = make_fetch_url(ctx, fetcher=boom, resolver=_public_resolver)
         with pytest.raises(ExternalContentError):
             await tool(url="https://crates.io/")
         egress = [
@@ -225,6 +236,29 @@ class TestFetchUrl:
         ]
         assert len(egress) == 1
         assert "fetch-error" in (egress[0].payload["blocked_reason"] or "")
+
+    @pytest.mark.asyncio
+    async def test_host_resolving_to_metadata_is_denied(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+    ) -> None:
+        """M2 — a policy-allowed hostname that resolves to a cloud-metadata IP
+        is rejected (and logged) before any fetch happens."""
+        ctx = _ctx(sandbox, store, router, network_policy=NetworkPolicy.OPEN)
+
+        def _to_metadata(host: str) -> list[str]:
+            return ["169.254.169.254"]
+
+        tool = make_fetch_url(ctx, fetcher=_stub_fetcher(body=""), resolver=_to_metadata)
+        with pytest.raises(PermissionDeniedError):
+            await tool(url="https://sneaky.example.com/")
+        egress = [
+            e for e in ctx.event_log.iter_events() if e.kind == EventKind.EGRESS_REQUEST.value
+        ]
+        assert len(egress) == 1
+        assert egress[0].payload["blocked_reason"] == "permission-denied"
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +305,21 @@ class TestRedirectValidation:
         new = self._redirect(handler, "https://crates.io/", "https://static.crates.io/x")
         assert new is not None
         assert new.full_url == "https://static.crates.io/x"
+
+    def test_hop_resolving_to_private_ip_is_blocked(self) -> None:
+        """M2 + H1 — a redirect to an allowlist-passing host that resolves to a
+        private IP is still blocked, because the hop runs the resolved-host gate."""
+        perm = Permission(allowed_paths=["**"], allowed_tools=[], network_policy=NetworkPolicy.OPEN)
+
+        def validate(u: str) -> None:
+            check_network_allowed(perm, u, None)
+            check_resolved_host_safe(
+                (urlparse(u).hostname or "").lower(), resolver=lambda _h: ["10.0.0.5"]
+            )
+
+        handler = _ValidatingRedirectHandler(validate)
+        with pytest.raises(PermissionDeniedError):
+            self._redirect(handler, "https://crates.io/", "https://internal.example.com/")
 
     def test_default_fetcher_validates_each_hop(self) -> None:
         """The validating fetcher must route every redirect through the validate
