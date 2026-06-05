@@ -15,14 +15,18 @@ Tool surface:
 from __future__ import annotations
 
 import fnmatch
+import http.client
 import json
 import re
+import socket
 from collections.abc import Callable
 from http.client import HTTPMessage
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import (
+    HTTPHandler,
     HTTPRedirectHandler,
+    HTTPSHandler,
     OpenerDirector,
     Request,
     build_opener,
@@ -34,6 +38,7 @@ from ..base import TaskContext
 from ..errors import ExternalContentError, PermissionDeniedError, ToolError
 from ..permissions import (
     Resolver,
+    assert_addr_allowed,
     check_network_allowed,
     check_path_access,
     check_resolved_host_safe,
@@ -84,9 +89,107 @@ class _ValidatingRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+# ---------------------------------------------------------------------------
+# Pin-and-connect transport (M2 TOCTOU)
+#
+# socket.create_connection resolves DNS itself at connect time, so even after a
+# pre-check an attacker controlling DNS could rebind a name to a private/metadata
+# IP between the check and the connect. We resolve ONCE, refuse if ANY resolved
+# address is blocked, then connect to that exact address — no second resolution,
+# no rebind window. SNI + certificate verification still run against the original
+# hostname because we only swap the socket, not HTTPSConnection's TLS handling.
+# ---------------------------------------------------------------------------
+
+_GetAddrInfo = Callable[..., list[Any]]
+_SocketFactory = Callable[..., Any]
+
+# Sentinel http.client passes as the timeout when none was set. It's not in
+# typeshed, so reach it via getattr to stay mypy-clean.
+_GLOBAL_DEFAULT_TIMEOUT: Any = getattr(socket, "_GLOBAL_DEFAULT_TIMEOUT", None)
+
+
+def _safe_create_connection(
+    address: tuple[str, int],
+    timeout: Any = _GLOBAL_DEFAULT_TIMEOUT,
+    source_address: tuple[str, int] | None = None,
+    *,
+    _getaddrinfo: _GetAddrInfo = socket.getaddrinfo,
+    _socket_factory: _SocketFactory = socket.socket,
+) -> Any:
+    """Drop-in for ``socket.create_connection`` that pins to a validated IP.
+
+    Resolves ``address`` once, raises PermissionDeniedError if ANY resolved
+    address is an SSRF target, then connects to one of those exact addresses.
+    The resolver/socket seams are injectable so the logic is testable without
+    real network I/O.
+    """
+    host, port = address
+    infos = _getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    # Validate ALL resolved addresses before opening any socket (a host with a
+    # mix of public + private records is refused — defends round-robin rebinds).
+    for info in infos:
+        assert_addr_allowed(str(info[4][0]))
+
+    last_err: OSError | None = None
+    for family, socktype, proto, _canon, sockaddr in infos:
+        sock = None
+        try:
+            sock = _socket_factory(family, socktype, proto)
+            if timeout is not _GLOBAL_DEFAULT_TIMEOUT and timeout is not None:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as e:
+            last_err = e
+            if sock is not None:
+                sock.close()
+    if last_err is not None:
+        raise last_err
+    raise OSError(f"no usable address for {host!r}")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that resolves+validates the host and pins the connect."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # http.client.HTTPConnection.connect() calls self._create_connection;
+        # swapping it is the supported way to control address resolution.
+        self._create_connection = _safe_create_connection  # type: ignore[method-assign]
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection variant — TLS (SNI + cert verify) is unchanged; only the
+    underlying socket is pinned to a validated address."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _safe_create_connection  # type: ignore[method-assign]
+
+
+class _PinnedHTTPHandler(HTTPHandler):
+    def http_open(self, req: Request) -> Any:
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(HTTPSHandler):
+    def https_open(self, req: Request) -> Any:
+        # context=None → HTTPSConnection builds its own secure default context
+        # (cert verification on). We deliberately don't reach into the base
+        # handler's private context attr.
+        return self.do_open(_PinnedHTTPSConnection, req)
+
+
 def _validating_opener(validate: _Validate) -> OpenerDirector:
-    """An opener whose redirect handler re-validates each hop via ``validate``."""
-    return build_opener(_ValidatingRedirectHandler(validate))
+    """An opener that (a) re-validates each redirect hop via ``validate`` and
+    (b) pins every connection to a resolved+validated IP (M2 TOCTOU)."""
+    return build_opener(
+        _ValidatingRedirectHandler(validate),
+        _PinnedHTTPHandler(),
+        _PinnedHTTPSHandler(),
+    )
 
 
 def _make_validating_fetcher(

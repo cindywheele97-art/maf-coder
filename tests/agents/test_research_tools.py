@@ -24,6 +24,9 @@ from maf_coder.agents.errors import (
 from maf_coder.agents.permissions import check_network_allowed, check_resolved_host_safe
 from maf_coder.agents.tools.research_tools import (
     _make_validating_fetcher,
+    _PinnedHTTPHandler,
+    _PinnedHTTPSHandler,
+    _safe_create_connection,
     _validating_opener,
     _ValidatingRedirectHandler,
     build_research_tools,
@@ -361,6 +364,89 @@ class TestRedirectValidation:
         assert status == 200
         assert body == "ok"
         assert "https://static.crates.io/final" in seen
+
+
+# ---------------------------------------------------------------------------
+# Pin-and-connect transport (M2 TOCTOU — resolve once, connect to that IP)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSocket:
+    def __init__(self, family: int, socktype: int, proto: int) -> None:
+        self.family = family
+        self.connected: tuple[str, int] | None = None
+        self.closed = False
+
+    def settimeout(self, t: object) -> None:
+        self.timeout = t
+
+    def bind(self, addr: tuple[str, int]) -> None:
+        self.bound = addr
+
+    def connect(self, addr: tuple[str, int]) -> None:
+        self.connected = addr
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _addrinfo(*ips: str, port: int = 443) -> list[tuple]:
+    import socket as _s
+
+    return [(_s.AF_INET, _s.SOCK_STREAM, 0, "", (ip, port)) for ip in ips]
+
+
+class TestPinAndConnect:
+    """M2 TOCTOU — the transport resolves once and connects to that exact,
+    validated IP; a rebind to a private IP can never be reached, and a socket is
+    never even opened when a resolved address is blocked."""
+
+    def test_blocked_resolved_ip_refused_before_any_socket(self) -> None:
+        made: list[_FakeSocket] = []
+
+        def factory(family: int, socktype: int, proto: int) -> _FakeSocket:
+            s = _FakeSocket(family, socktype, proto)
+            made.append(s)
+            return s
+
+        with pytest.raises(PermissionDeniedError):
+            _safe_create_connection(
+                ("evil.example.com", 443),
+                _getaddrinfo=lambda *a, **k: _addrinfo("169.254.169.254"),
+                _socket_factory=factory,
+            )
+        assert made == []  # validation happens before any socket is created
+
+    def test_mixed_records_refused(self) -> None:
+        # One public, one private A record → refuse (round-robin rebinding).
+        with pytest.raises(PermissionDeniedError):
+            _safe_create_connection(
+                ("mixed.example.com", 443),
+                _getaddrinfo=lambda *a, **k: _addrinfo("1.1.1.1", "10.0.0.7"),
+                _socket_factory=lambda *a: _FakeSocket(*a),
+            )
+
+    def test_connects_to_validated_address(self) -> None:
+        made: list[_FakeSocket] = []
+
+        def factory(family: int, socktype: int, proto: int) -> _FakeSocket:
+            s = _FakeSocket(family, socktype, proto)
+            made.append(s)
+            return s
+
+        sock = _safe_create_connection(
+            ("good.example.com", 443),
+            timeout=5,
+            _getaddrinfo=lambda *a, **k: _addrinfo("93.184.216.34"),
+            _socket_factory=factory,
+        )
+        assert isinstance(sock, _FakeSocket)
+        assert sock.connected == ("93.184.216.34", 443)
+
+    def test_opener_installs_pinned_handlers(self) -> None:
+        handlers = _validating_opener(lambda _u: None).handlers
+        assert any(isinstance(h, _PinnedHTTPHandler) for h in handlers)
+        assert any(isinstance(h, _PinnedHTTPSHandler) for h in handlers)
 
 
 # ---------------------------------------------------------------------------
