@@ -61,6 +61,41 @@ class _RecordingDocker(DockerSandbox):
         return CommandResult(command=str(cmd), exit_code=0, stdout="0", stderr="", duration_sec=0.0)
 
 
+# -- M1: containers must run with resource + privilege limits ---------------
+
+
+class TestHardeningLimits:
+    def test_defaults_bound_memory_pids_and_strip_privileges(self) -> None:
+        kw = DockerSandbox(image="rust:latest")._hardening_kwargs()
+        assert kw["mem_limit"]  # memory is bounded (OOM vector)
+        assert isinstance(kw["pids_limit"], int)  # fork-bomb vector
+        assert kw["pids_limit"] > 0
+        assert kw["cap_drop"] == ["ALL"]  # no Linux capabilities
+        assert any("no-new-privileges" in opt for opt in kw["security_opt"])
+
+    def test_nano_cpus_absent_by_default(self) -> None:
+        # CPU starvation doesn't crash the host, so the cap is opt-in.
+        assert "nano_cpus" not in DockerSandbox(image="x")._hardening_kwargs()
+
+    def test_overrides_pass_through(self) -> None:
+        sb = DockerSandbox(image="x", mem_limit="2g", pids_limit=256, nano_cpus=1_500_000_000)
+        kw = sb._hardening_kwargs()
+        assert kw["mem_limit"] == "2g"
+        assert kw["pids_limit"] == 256
+        assert kw["nano_cpus"] == 1_500_000_000
+
+    def test_network_isolation_unchanged(self) -> None:
+        # M1 must not weaken the existing egress containment.
+        assert DockerSandbox(image="x")._run_base_kwargs()["network_mode"] == "none"
+
+    def test_run_base_includes_hardening(self) -> None:
+        # The kwargs both start() and restore_snapshot() pass to containers.run
+        # must carry the hardening limits, not just the bare container config.
+        base = DockerSandbox(image="x")._run_base_kwargs()
+        for key in ("mem_limit", "pids_limit", "cap_drop", "security_opt"):
+            assert key in base
+
+
 class TestPathQuoting:
     @pytest.mark.asyncio
     async def test_read_file_path_is_shell_quoted(self) -> None:
