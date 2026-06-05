@@ -3,11 +3,13 @@
 Top-level coroutine that orchestrates a full mission. Owns: scheduler, agents,
 sandbox, lifecycle.
 
-Phase B scope: dry-run-capable orchestration with the minimum viable mission
-shape (init → profile → planning → scheduled execution → finalize). Multi-day
-ergonomics (status report timer, budget guard, resume) are stubs that exist
-to satisfy the interface contract and will be filled in as Phase C work
-proceeds.
+Mission shape: init → profile → planning → per-milestone scheduled execution →
+finalize, driven under a concurrent `MissionSupervisor` heartbeat. The multi-day
+ergonomics are wired (Phase E), not stubs: the budget guard (`_seed_budget` +
+`make_budget_guard`), the status-report hook (`make_status_report_hook`), and
+resume/rollback (`resume` / `rollback` + checkpoint store). `_milestone_loop`
+re-invokes the Orchestrator once per milestone until `complete_mission` sets
+`mission_state.mission_complete`.
 """
 
 from __future__ import annotations
