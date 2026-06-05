@@ -19,12 +19,18 @@ Design rules:
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import re
+import socket
+from collections.abc import Callable
 from typing import Literal
 from urllib.parse import urlparse
 
 from ..schemas import NetworkPolicy, Permission
 from .errors import PermissionDeniedError
+
+Resolver = Callable[[str], list[str]]
+"""DNS resolver seam: host -> list of resolved IP strings. Injectable for tests."""
 
 PathMode = Literal["read", "write"]
 
@@ -199,21 +205,91 @@ def check_network_allowed(
     return
 
 
-def _is_private_ip(host: str) -> bool:
-    """Cheap RFC-1918 / link-local detection without importing ipaddress for
-    obvious literal cases. Hostnames that aren't IPs return False here; the
-    deeper firewall layer (real sandbox egress policy) handles DNS-level
-    resolution.
+def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True iff `ip` is an SSRF target: private (RFC-1918 + doc/CGNAT ranges),
+    loopback, link-local (incl. cloud metadata 169.254.169.254 / fd00:ec2::254),
+    multicast, reserved, or unspecified. IPv4-mapped IPv6 is unwrapped first so
+    ``::ffff:10.0.0.1`` can't smuggle a private v4 address past the check.
     """
-    if re.match(r"^10\.\d+\.\d+\.\d+$", host):
-        return True
-    if re.match(r"^192\.168\.\d+\.\d+$", host):
-        return True
-    if re.match(r"^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$", host):
-        return True
-    if re.match(r"^169\.254\.\d+\.\d+$", host):
-        return True
-    return bool(re.match(r"^127\.\d+\.\d+\.\d+$", host))
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _is_private_ip(host: str) -> bool:
+    """True iff `host` is a literal IP (v4 or v6) in a blocked range.
+
+    Hostnames (non-literal) return False here — those are resolved and checked
+    separately by :func:`check_resolved_host_safe` (M2), since a literal-only
+    check let an allowlisted hostname resolve to a private/metadata IP.
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return _ip_is_blocked(ip)
+
+
+def _default_resolver(host: str) -> list[str]:
+    """Resolve `host` to all its IPs via the system resolver (A + AAAA)."""
+    # info[4] is the sockaddr; element 0 is the address string (v4 and v6).
+    return [str(info[4][0]) for info in socket.getaddrinfo(host, None)]
+
+
+def check_resolved_host_safe(
+    host: str,
+    *,
+    resolver: Resolver = _default_resolver,
+) -> None:
+    """Reject `host` if it (or anything it resolves to) is an SSRF target (M2).
+
+    ``check_network_allowed`` only blocks *literal* private IPs in the URL, so
+    an allowlisted hostname — or any host under OPEN policy — that resolves to a
+    private / link-local / cloud-metadata address slipped through. This resolves
+    the host and rejects if ANY resolved address is blocked.
+
+    A literal-IP host is validated directly (no DNS). Resolution failure is
+    non-fatal: a host that can't resolve can't be connected to, so we let the
+    subsequent fetch surface the error rather than converting it into a denial.
+
+    Note: this is resolve-then-check, so a determined attacker controlling DNS
+    could still rebind between this check and the actual connect (TOCTOU). Full
+    rebinding protection needs pin-and-connect at the socket layer; this closes
+    the realistic case (a host pointing inward) without that complexity.
+    """
+    if not host:
+        return
+    # Literal IP host: validate directly, skip DNS.
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if _ip_is_blocked(literal):
+            raise PermissionDeniedError(host, f"host IP {host} blocked by SSRF denylist")
+        return
+
+    try:
+        addrs = resolver(host)
+    except OSError:
+        return
+    for addr in addrs:
+        candidate = addr.split("%", 1)[0]  # strip IPv6 zone id (e.g. fe80::1%eth0)
+        try:
+            rip = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if _ip_is_blocked(rip):
+            raise PermissionDeniedError(
+                host, f"host {host} resolves to blocked address {candidate}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +339,10 @@ def check_command_pattern(permission: Permission, command: str) -> None:
 
 __all__ = [
     "PathMode",
+    "Resolver",
     "check_command_pattern",
     "check_network_allowed",
     "check_path_access",
+    "check_resolved_host_safe",
     "check_tool_allowed",
 ]

@@ -19,6 +19,7 @@ from .base import BaseAgent, TaskContext
 from .tools.research_tools import build_research_tools
 
 _FetchFn = Callable[[str, int], tuple[str, str, int, str]]
+_Resolver = Callable[[str], list[str]]
 
 
 @dataclass(frozen=True)
@@ -50,16 +51,19 @@ class ResearchWorkerAgent(BaseAgent[ResearchRunSummary]):
         sandbox: Any,
         fetcher: _FetchFn | None = None,
         domain_whitelist: list[str] | None = None,
+        resolver: _Resolver | None = None,
     ) -> None:
         super().__init__(store=store, event_log=event_log, router=router, sandbox=sandbox)
         self._fetcher = fetcher
         self._domain_whitelist = domain_whitelist
+        self._resolver = resolver
 
     def build_tools(self, ctx: TaskContext) -> list[Any]:
         return build_research_tools(
             ctx,
             fetcher=self._fetcher,
             domain_whitelist=self._domain_whitelist,
+            resolver=self._resolver,
         )
 
     def build_first_user_message(self, ctx: TaskContext) -> str:

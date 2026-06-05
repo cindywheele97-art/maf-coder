@@ -89,10 +89,15 @@ def _stub_fetch(url: str, timeout_sec: int) -> tuple[str, str, int, str]:
     return (url, "text/html", 200, "<p>axum routing docs</p>")
 
 
+def _stub_resolver(host: str) -> list[str]:
+    """Hermetic DNS stub so the M2 resolved-host check never touches real DNS."""
+    return ["1.1.1.1"]
+
+
 class _ScriptedResearch(ResearchWorkerAgent):
     def __init__(self, *, prompt_path: Path, **kw):  # type: ignore[no-untyped-def]
         self.prompt_path = prompt_path
-        super().__init__(fetcher=_stub_fetch, **kw)
+        super().__init__(fetcher=_stub_fetch, resolver=_stub_resolver, **kw)
 
     async def _execute_sdk(self, **kw):  # type: ignore[override]
         ctx = kw["ctx"]
