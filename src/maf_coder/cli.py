@@ -422,6 +422,40 @@ def cmd_metrics(
     return report.model_dump(mode="json")
 
 
+def cmd_preflight(
+    *,
+    repo: Path | None = None,
+    router_config: Path | None = None,
+    sandbox: str = "docker",
+    sandbox_image: str | None = None,
+) -> dict[str, Any]:
+    """Production-readiness gate: keys, router config, repo, Docker + image.
+
+    Inspect-only (no LLM calls, no spend). Returns ``{"ok": bool, "checks":
+    [...]}``. The Typer wrapper renders it and sets the process exit code.
+    """
+    from .orchestrator.preflight import DEFAULT_SANDBOX_IMAGE, run_preflight
+
+    report = run_preflight(
+        (router_config or _default_router_config()).resolve(),
+        repo_path=repo,
+        sandbox=sandbox,
+        image=sandbox_image or DEFAULT_SANDBOX_IMAGE,
+    )
+    return {
+        "ok": report.ok,
+        "checks": [
+            {
+                "name": c.name,
+                "status": c.status,
+                "detail": c.detail,
+                "remediation": c.remediation,
+            }
+            for c in report.checks
+        ],
+    }
+
+
 def _generate_mission_id() -> str:
     ts = datetime.now(UTC).strftime("%Y-%m-%d-%H%M%S")
     return f"m-{ts}"
@@ -611,6 +645,40 @@ if _TYPER_AVAILABLE:
         result = cmd_metrics(missions_root=missions_root, markdown=markdown)
         typer.echo(result if isinstance(result, str) else json.dumps(result, indent=2))
 
+    @app.command("preflight")
+    def _preflight(
+        repo: Path | None = typer.Option(
+            None, "--repo", "-r", help="Target Rust repo to profile-check (optional)."
+        ),
+        router_config: Path | None = typer.Option(
+            None, "--router-config", help="Path to droid_whispering.yaml."
+        ),
+        sandbox: str = typer.Option(
+            "docker", "--sandbox", help="Backend to check readiness for: 'docker' or 'local'."
+        ),
+        sandbox_image: str | None = typer.Option(
+            None, "--sandbox-image", help="Docker image to check for (default maf-coder:rust-sandbox)."
+        ),
+    ) -> None:
+        """Production-readiness gate. Exits non-zero if any check fails."""
+        result = cmd_preflight(
+            repo=repo,
+            router_config=router_config,
+            sandbox=sandbox,
+            sandbox_image=sandbox_image,
+        )
+        _sigil = {"pass": "✓", "fail": "✗", "warn": "!"}
+        for c in result["checks"]:
+            line = f"  {_sigil.get(c['status'], '?')} {c['name']}: {c['detail']}"
+            if c["remediation"] and c["status"] != "pass":
+                line += f"\n      → {c['remediation']}"
+            typer.echo(line)
+        if result["ok"]:
+            typer.echo("\n✓ Preflight GO — ready for a real run.")
+        else:
+            typer.echo("\n✗ Preflight NO-GO — resolve the ✗ items above, then re-run.")
+            raise typer.Exit(code=1)
+
 
 def main() -> None:  # pragma: no cover - thin shell entry
     if _TYPER_AVAILABLE:
@@ -625,6 +693,7 @@ __all__ = [
     "cmd_mission_new",
     "cmd_mission_profile",
     "cmd_metrics",
+    "cmd_preflight",
     "cmd_mission_routing_stats",
     "cmd_mission_status",
     "cmd_pr",

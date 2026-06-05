@@ -51,6 +51,22 @@ def test_cmd_mission_profile(tmp_path: Path) -> None:
     assert out["crate_layout"] == "single"
 
 
+def test_cmd_preflight_local_reports_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    out = cli.cmd_preflight(router_config=router, sandbox="local")
+    assert "ok" in out
+    assert "checks" in out
+    # No keys exported in the test env → at least one api-key check fails.
+    assert out["ok"] is False
+    assert any(c["status"] == "fail" and "api key" in c["name"] for c in out["checks"])
+    # local backend → no docker checks.
+    assert not any("docker" in c["name"].lower() for c in out["checks"])
+
+
 def test_cmd_mission_new_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "r"
     _write_repo(repo)
