@@ -31,17 +31,35 @@ from ..schemas import (
 logger = logging.getLogger(__name__)
 
 
-def profile_project(repo_path: str | Path) -> ProjectProfile:
+class ProjectProfileError(RuntimeError):
+    """Raised by `profile_project(strict=True)` when the repo can't be profiled.
+
+    A missing or malformed Cargo.toml on a real mission means the operator
+    pointed `--repo` at the wrong place (or a non-Cargo project); silently
+    profiling a placeholder `library` crate would mislead the entire mission, so
+    real runs fail loud instead.
+    """
+
+
+def profile_project(repo_path: str | Path, *, strict: bool = False) -> ProjectProfile:
     """Inspect `repo_path` and return a ProjectProfile.
 
-    Tolerates malformed Cargo.toml — falls back to a `library` profile with
-    a single placeholder crate. Real production missions should fail loudly,
-    but for the bootstrap path we prefer a partial profile over a crash.
+    By default (``strict=False``, the bootstrap/dry-run path) this tolerates a
+    missing or malformed Cargo.toml and falls back to a `library` profile with a
+    single placeholder crate — a partial profile over a crash.
+
+    Real missions (``--no-dry-run``) pass ``strict=True``: a missing/malformed
+    Cargo.toml raises :class:`ProjectProfileError` rather than silently
+    mis-profiling, which would mislead the whole mission.
     """
     root = Path(repo_path).resolve()
     cargo_toml = root / "Cargo.toml"
 
     if not cargo_toml.exists():
+        if strict:
+            raise ProjectProfileError(
+                f"{cargo_toml} not found — point --repo at a Cargo project, or use --dry-run"
+            )
         logger.warning("profile_project: %s missing", cargo_toml)
         return _placeholder_profile(name=root.name or "unknown")
 
@@ -49,6 +67,8 @@ def profile_project(repo_path: str | Path) -> ProjectProfile:
         with cargo_toml.open("rb") as fh:
             cargo = tomllib.load(fh)
     except Exception as e:
+        if strict:
+            raise ProjectProfileError(f"failed to parse {cargo_toml}: {e}") from e
         logger.warning("profile_project: failed to parse %s: %r", cargo_toml, e)
         return _placeholder_profile(name=root.name or "unknown")
 
@@ -212,4 +232,4 @@ def _detect_ci(root: Path) -> CIExisting:
     )
 
 
-__all__ = ["profile_project"]
+__all__ = ["ProjectProfileError", "profile_project"]

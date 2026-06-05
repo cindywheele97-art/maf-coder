@@ -463,6 +463,13 @@ class MissionDriver:
     async def _profile_and_save(self) -> None:
         if self.store.exists("project_profile.yaml"):
             return
+        # Real runs fail loud if the repo can't be profiled (ProjectProfileError
+        # propagates out of start()); dry-runs keep the lenient placeholder so
+        # the bootstrap path never crashes on a non-Cargo dir.
+        if not self.config.dry_run:
+            profile = profile_project(self.config.repo_path, strict=True)
+            self.store.save_project_profile(profile)
+            return
         try:
             profile = profile_project(self.config.repo_path)
             self.store.save_project_profile(profile)
