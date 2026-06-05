@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from urllib.request import Request
 
 import pytest
 
@@ -18,7 +20,11 @@ from maf_coder.agents.errors import (
     PermissionDeniedError,
     ToolError,
 )
+from maf_coder.agents.permissions import check_network_allowed
 from maf_coder.agents.tools.research_tools import (
+    _make_validating_fetcher,
+    _validating_opener,
+    _ValidatingRedirectHandler,
     build_research_tools,
     make_cargo_metadata,
     make_cargo_tree,
@@ -219,6 +225,93 @@ class TestFetchUrl:
         ]
         assert len(egress) == 1
         assert "fetch-error" in (egress[0].payload["blocked_reason"] or "")
+
+
+# ---------------------------------------------------------------------------
+# Redirect re-validation (H1 — SSRF allowlist must hold across redirects)
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectValidation:
+    """urllib auto-follows 3xx; without re-validation an allowed host could
+    302 the fetch onto a denied host or an SSRF target. Each hop must re-run
+    the SAME network gate as the initial URL.
+    """
+
+    @staticmethod
+    def _redirect(handler: _ValidatingRedirectHandler, from_url: str, to_url: str) -> Request | None:
+        # Mirror urllib's HTTPRedirectHandler.redirect_request(req, fp, code, msg, headers, newurl)
+        req = Request(from_url)
+        return handler.redirect_request(req, None, 302, "Found", http.client.HTTPMessage(), to_url)
+
+    def test_opener_installs_the_validating_handler(self) -> None:
+        opener = _validating_opener(lambda _u: None)
+        assert any(isinstance(h, _ValidatingRedirectHandler) for h in opener.handlers)
+
+    def test_hop_to_ssrf_target_is_blocked(self) -> None:
+        perm = Permission(allowed_paths=["**"], allowed_tools=[], network_policy=NetworkPolicy.OPEN)
+        handler = _ValidatingRedirectHandler(lambda u: check_network_allowed(perm, u, None))
+        # OPEN policy still blocks the cloud-metadata / RFC-1918 denylist.
+        with pytest.raises(PermissionDeniedError):
+            self._redirect(handler, "https://crates.io/", "http://169.254.169.254/latest/meta-data/")
+
+    def test_hop_outside_allowlist_is_blocked(self) -> None:
+        perm = Permission(
+            allowed_paths=["**"], allowed_tools=[], network_policy=NetworkPolicy.CRATES_ONLY
+        )
+        handler = _ValidatingRedirectHandler(lambda u: check_network_allowed(perm, u, None))
+        with pytest.raises(PermissionDeniedError):
+            self._redirect(handler, "https://crates.io/", "https://evil.example.com/")
+
+    def test_permitted_hop_passes_through(self) -> None:
+        perm = Permission(
+            allowed_paths=["**"], allowed_tools=[], network_policy=NetworkPolicy.CRATES_ONLY
+        )
+        handler = _ValidatingRedirectHandler(lambda u: check_network_allowed(perm, u, None))
+        new = self._redirect(handler, "https://crates.io/", "https://static.crates.io/x")
+        assert new is not None
+        assert new.full_url == "https://static.crates.io/x"
+
+    def test_default_fetcher_validates_each_hop(self) -> None:
+        """The validating fetcher must route every redirect through the validate
+        callback before opening it (network-free — we stub the opener)."""
+        seen: list[str] = []
+
+        class _FakeResp:
+            status = 200
+            headers = http.client.HTTPMessage()
+
+            def read(self) -> bytes:
+                return b"ok"
+
+            def geturl(self) -> str:
+                return "https://static.crates.io/final"
+
+            def __enter__(self) -> _FakeResp:
+                return self
+
+            def __exit__(self, *a: object) -> None:
+                return None
+
+        class _FakeOpener:
+            def __init__(self, validate):  # type: ignore[no-untyped-def]
+                self._validate = validate
+
+            def open(self, req: Request, timeout: int) -> _FakeResp:
+                # Simulate one redirect hop the way urllib would: validate first.
+                self._validate("https://static.crates.io/final")
+                return _FakeResp()
+
+        def opener_factory(validate):  # type: ignore[no-untyped-def]
+            return _FakeOpener(validate)
+
+        fetcher = _make_validating_fetcher(
+            lambda u: seen.append(u), opener_factory=opener_factory
+        )
+        _final_url, _ct, status, body = fetcher("https://crates.io/", 10)
+        assert status == 200
+        assert body == "ok"
+        assert "https://static.crates.io/final" in seen
 
 
 # ---------------------------------------------------------------------------
