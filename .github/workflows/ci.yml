@@ -38,3 +38,9 @@ jobs:
 
       - name: Tests (pytest)
         run: pytest
+
+      - name: Security scan (bandit)
+        run: bandit -r src/maf_coder --severity-level medium --confidence-level medium
+
+      - name: Dependency audit (pip-audit)
+        run: pip-audit --skip-editable

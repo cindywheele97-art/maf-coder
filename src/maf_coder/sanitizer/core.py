@@ -28,9 +28,9 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _CONTROL_CHAR_RE = re.compile(
     "["
     "\x00-\x08\x0b\x0c\x0e-\x1f\x7f"
-    "​-‏"  # ZWSP, ZWNJ, ZWJ, LRM, RLM
-    "‪-‮"  # LRE, RLE, PDF, LRO, RLO
-    "⁠-⁯"  # word joiner / invisible separator / etc.
+    "\u200b-\u200f"  # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "\u202a-\u202e"  # LRE, RLE, PDF, LRO, RLO
+    "\u2060-\u206f"  # word joiner / invisible separator / etc.
     "]"
 )
 
