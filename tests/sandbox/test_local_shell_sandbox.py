@@ -73,6 +73,32 @@ class TestExec:
         assert "hello from stdin" in r.stdout
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_secret_host_env_is_stripped(
+        self, sandbox: LocalShellSandbox, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """L2 — host API keys / tokens must not leak into agent-run commands."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+        monkeypatch.setenv("GH_TOKEN", "ghp_secret")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+        monkeypatch.setenv("MAF_HARMLESS", "ok")  # non-secret host vars still pass
+        r = await sandbox.exec("echo key=$ANTHROPIC_API_KEY tok=$GH_TOKEN h=$MAF_HARMLESS")
+        assert "sk-secret" not in r.stdout
+        assert "ghp_secret" not in r.stdout
+        assert "aws-secret" not in r.stdout
+        assert "h=ok" in r.stdout  # non-secret env is preserved
+
+    @pytest.mark.asyncio
+    async def test_explicit_env_overrides_even_secret_names(
+        self, sandbox: LocalShellSandbox, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly-passed env value wins — the strip only targets inherited
+        host secrets, not values the caller deliberately provides."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "host-secret")
+        r = await sandbox.exec("echo $ANTHROPIC_API_KEY", env={"ANTHROPIC_API_KEY": "explicit"})
+        assert "explicit" in r.stdout
+        assert "host-secret" not in r.stdout
+
     async def test_env(self, sandbox: LocalShellSandbox) -> None:
         r = await sandbox.exec("echo $MAF_TEST_VAR", env={"MAF_TEST_VAR": "marker"})
         assert "marker" in r.stdout

@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import tempfile
@@ -80,6 +81,28 @@ def _truncate(buf: str, limit: int) -> tuple[str, bool]:
         head + f"\n... [truncated {len(buf) - limit} bytes] ...\n" + tail,
         True,
     )
+
+
+# Host env var names whose VALUES are secrets that must never leak into an
+# agent-run command (L2). Matched case-insensitively against the var name. The
+# LocalShellSandbox inherits os.environ, so without this an agent command could
+# read ANTHROPIC_API_KEY / GH_TOKEN / AWS_SECRET_ACCESS_KEY / etc. A Rust build
+# needs none of these. Explicitly-passed `env` values are exempt (deliberate).
+_SECRET_ENV_RE = re.compile(
+    r"(API[_-]?KEY|_KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)",
+    re.IGNORECASE,
+)
+
+
+def _safe_host_env(extra: dict[str, str] | None) -> dict[str, str]:
+    """Host env minus secret-named vars, then `extra` layered on top (L2).
+
+    `extra` is the caller's explicit env: it always wins, even for secret-named
+    keys, because the caller chose to provide it.
+    """
+    base = {k: v for k, v in os.environ.items() if not _SECRET_ENV_RE.search(k)}
+    base.update(extra or {})
+    return base
 
 
 def _resolve_container_path(container_path: str) -> PurePosixPath:
@@ -253,7 +276,9 @@ class LocalShellSandbox(SandboxClient):
         cwd_host.mkdir(parents=True, exist_ok=True)
 
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
-        full_env = {**os.environ, **(env or {})}
+        # L2: inherit host env but strip secret-named vars (API keys, tokens) so
+        # an agent-run command can't read them. Explicit `env` always wins.
+        full_env = _safe_host_env(env)
 
         t0 = time.monotonic()
         try:
