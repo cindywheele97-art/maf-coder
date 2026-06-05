@@ -18,14 +18,20 @@ import fnmatch
 import json
 import re
 from collections.abc import Callable
+from http.client import HTTPMessage
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import (
+    HTTPRedirectHandler,
+    OpenerDirector,
+    Request,
+    build_opener,
+)
 
 from ...sanitizer import sanitize
 from .._sdk import function_tool
 from ..base import TaskContext
-from ..errors import ExternalContentError, ToolError
+from ..errors import ExternalContentError, PermissionDeniedError, ToolError
 from ..permissions import (
     check_network_allowed,
     check_path_access,
@@ -43,20 +49,76 @@ USER_AGENT = "maf-coder/Research-Worker"
 _FetchFn = Callable[[str, int], tuple[str, str, int, str]]
 """Pluggable HTTP transport: (url, timeout_sec) -> (final_url, content_type, status, body)."""
 
+_Validate = Callable[[str], None]
+"""Per-hop URL gate: raises PermissionDeniedError to block, returns None to allow."""
 
-def _http_get_default(url: str, timeout_sec: int) -> tuple[str, str, int, str]:
-    """Default urllib-based fetcher. Returns (final_url, content_type, status, body)."""
-    req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    # Scheme is restricted to http/https by check_network_allowed (run in fetch_url
-    # before this transport), so urlopen can't reach file:// / ftp:// / etc.
-    with urlopen(req, timeout=timeout_sec) as resp:  # nosec B310
-        body = resp.read()
-        charset = resp.headers.get_content_charset() or "utf-8"
-        try:
-            text = body.decode(charset, errors="replace")
-        except LookupError:
-            text = body.decode("utf-8", errors="replace")
-        return (resp.geturl(), resp.headers.get_content_type() or "text/plain", resp.status, text)
+_OpenerFactory = Callable[[_Validate], OpenerDirector]
+
+
+class _ValidatingRedirectHandler(HTTPRedirectHandler):
+    """Re-run the network gate on every redirect hop (H1).
+
+    urllib follows 3xx automatically; without this an allowed host could 302
+    the fetch onto a denied host or an SSRF target (cloud metadata, RFC-1918).
+    Because ``fetch_url`` runs in the host process — not inside the container's
+    ``network_mode=none`` sandbox — this allowlist is the only egress control,
+    so it must hold across redirects, not just on the initial URL.
+    """
+
+    def __init__(self, validate: _Validate) -> None:
+        super().__init__()
+        self._validate = validate
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> Request | None:
+        self._validate(newurl)  # raises PermissionDeniedError to block the hop
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _validating_opener(validate: _Validate) -> OpenerDirector:
+    """An opener whose redirect handler re-validates each hop via ``validate``."""
+    return build_opener(_ValidatingRedirectHandler(validate))
+
+
+def _make_validating_fetcher(
+    validate: _Validate,
+    *,
+    opener_factory: _OpenerFactory = _validating_opener,
+) -> _FetchFn:
+    """Default urllib fetcher that re-validates redirects (H1).
+
+    `opener_factory` is injectable so the redirect-validation wiring can be
+    exercised without real network I/O.
+    """
+
+    def fn(url: str, timeout_sec: int) -> tuple[str, str, int, str]:
+        opener = opener_factory(validate)
+        req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+        # Scheme is restricted to http/https by check_network_allowed (run in
+        # fetch_url before this transport AND on every redirect hop), so the
+        # opener can't reach file:// / ftp:// / etc.
+        with opener.open(req, timeout=timeout_sec) as resp:  # nosec B310
+            body = resp.read()
+            charset = resp.headers.get_content_charset() or "utf-8"
+            try:
+                text = body.decode(charset, errors="replace")
+            except LookupError:
+                text = body.decode("utf-8", errors="replace")
+            return (
+                resp.geturl(),
+                resp.headers.get_content_type() or "text/plain",
+                resp.status,
+                text,
+            )
+
+    return fn
 
 
 def make_fetch_url(
@@ -66,7 +128,11 @@ def make_fetch_url(
     domain_whitelist: list[str] | None = None,
 ) -> Any:
     """Build the fetch_url tool. `fetcher` is injectable for testing."""
-    transport = fetcher or _http_get_default
+
+    def _validate_hop(hop_url: str) -> None:
+        check_network_allowed(ctx.task.permission, hop_url, domain_whitelist)
+
+    transport = fetcher or _make_validating_fetcher(_validate_hop)
 
     @function_tool
     async def fetch_url(url: str, timeout_sec: int = 30) -> SanitizedContent:
@@ -106,6 +172,19 @@ def make_fetch_url(
         domain = (parsed.hostname or "").lower()
         try:
             final_url, content_type, status, body = transport(url, timeout_sec)
+        except PermissionDeniedError:
+            # A redirect hop was blocked by the per-hop network gate (H1). Log
+            # it distinctly and re-raise the structured denial as-is, matching
+            # how an initial-URL denial surfaces to the agent.
+            ctx.event_log.log_egress_request(
+                mission_id=ctx.mission_id,
+                actor=_actor(ctx),
+                url=url,
+                domain=domain,
+                blocked_reason="redirect-denied",
+                task_id=ctx.task.task_id,
+            )
+            raise
         except Exception as e:
             ctx.event_log.log_egress_request(
                 mission_id=ctx.mission_id,

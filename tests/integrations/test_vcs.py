@@ -18,6 +18,7 @@ from maf_coder.agents.base import TaskContext
 from maf_coder.agents.results import CommandResult
 from maf_coder.blackboard import ArtifactStore
 from maf_coder.integrations.vcs import (
+    GitleaksUnavailableError,
     build_artifact_links,
     compose_pr_command,
     create_pull_request,
@@ -130,6 +131,13 @@ def _gitleaks_dirty(cmd: str) -> CommandResult:
     )
     # gitleaks exits non-zero when leaks are found; findings still parse.
     return CommandResult(command=cmd, exit_code=1, stdout=payload, stderr="", duration_sec=0.01)
+
+
+def _gitleaks_missing(cmd: str) -> CommandResult:
+    # 127 = "command not found": gitleaks binary absent from the sandbox image.
+    return CommandResult(
+        command=cmd, exit_code=127, stdout="", stderr="gitleaks: command not found", duration_sec=0.01
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +329,57 @@ class TestGitleaksGate:
         findings = await run_gitleaks_gate(ctx)
         assert len(findings) == 1
         assert findings[0]["File"] == "src/main.rs"
+
+
+class TestGitleaksGateFailClosed:
+    """H2 — a secret-scan gate that cannot run MUST fail closed. A missing
+    gitleaks binary previously degraded to 'clean', silently letting a PR open
+    with secrets in it. The gate must refuse instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_gate_raises_when_gitleaks_not_installed(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            return _gitleaks_missing(cmd)
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        with pytest.raises(GitleaksUnavailableError):
+            await run_gitleaks_gate(ctx)
+
+    @pytest.mark.asyncio
+    async def test_create_pr_refuses_when_gitleaks_unavailable(
+        self,
+        sandbox: LocalShellSandbox,
+        store: ArtifactStore,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[str] = []
+
+        async def fake_exec(cmd: str, *, cwd: str = "", timeout_sec: int = 0) -> CommandResult:
+            calls.append(cmd)
+            if "gitleaks" in cmd:
+                return _gitleaks_missing(cmd)
+            return CommandResult(
+                command=cmd, exit_code=0, stdout=PR_URL, stderr="", duration_sec=0.01
+            )
+
+        monkeypatch.setattr(sandbox, "exec", fake_exec)
+        ctx = _ctx(sandbox, store, router)
+        result = await create_pull_request(ctx, _spec(VcsProvider.GH))
+        assert result.created is False
+        assert result.refused is True
+        assert result.refusal_reason is not None
+        assert "gitleaks" in result.refusal_reason.lower()
+        # The PR CLI must NOT have been invoked when the gate cannot run.
+        assert not any(c.startswith("gh pr create") for c in calls)
 
 
 # ---------------------------------------------------------------------------

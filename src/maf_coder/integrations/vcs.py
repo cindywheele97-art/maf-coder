@@ -60,6 +60,15 @@ class GitleaksGateError(Exception):
         super().__init__(f"gitleaks found {len(findings)} secret(s); refusing PR")
 
 
+class GitleaksUnavailableError(Exception):
+    """Raised when the gitleaks secret-scan gate cannot run (binary absent).
+
+    A gate that cannot execute MUST fail closed (H2): treating "tool missing"
+    as "no secrets" would silently let a PR open with secrets in it. Surfaced
+    to callers as a ``PullRequestResult(refused=True)``.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Artifact-link builder + PR-description generation
 # ---------------------------------------------------------------------------
@@ -265,13 +274,18 @@ async def run_gitleaks_gate(ctx: TaskContext, *, path: str = ".") -> list[dict[s
     """Run the EXISTING gitleaks_detect tool as a pre-PR secret scan.
 
     Returns the list of findings (empty => clean). Reuses
-    ``make_gitleaks_detect`` so the gitleaks invocation, the
-    not-installed-degrades behavior, and the JSON parsing all stay in one place.
-    A not-installed gitleaks degrades to "clean" (the security worker already
-    surfaces installed=False elsewhere); a clean run returns [].
+    ``make_gitleaks_detect`` so the gitleaks invocation and the JSON parsing
+    stay in one place.
+
+    Fails closed (H2): if gitleaks is not installed in the sandbox, raises
+    ``GitleaksUnavailableError`` instead of degrading to "clean". A secret-scan
+    gate that cannot run must refuse the PR, not silently pass it.
     """
     gitleaks_detect = make_gitleaks_detect(ctx)
     result = await gitleaks_detect(path)
+    if result.get("installed") is False:
+        note = str(result.get("note") or "gitleaks binary not installed in sandbox")
+        raise GitleaksUnavailableError(note)
     findings = result.get("findings")
     if isinstance(findings, list):
         return findings
@@ -293,10 +307,25 @@ async def create_pull_request(
     """Mission-end create-PR action: gitleaks gate, then gh/glab wrapper.
 
     If gitleaks finds secrets the PR is REFUSED (``refused=True``) with the
-    findings surfaced and no CLI command run. Otherwise the composed create
-    command runs and the parsed PR URL is returned.
+    findings surfaced and no CLI command run. If gitleaks cannot run at all
+    (binary absent), the gate fails closed and the PR is likewise REFUSED (H2).
+    Otherwise the composed create command runs and the parsed PR URL is returned.
     """
-    findings = await run_gitleaks_gate(ctx, path=scan_path)
+    try:
+        findings = await run_gitleaks_gate(ctx, path=scan_path)
+    except GitleaksUnavailableError as e:
+        return PullRequestResult(
+            mission_id=spec.mission_id,
+            provider=VcsProvider(spec.provider),
+            created=False,
+            refused=True,
+            refusal_reason=(
+                f"gitleaks secret-scan gate could not run ({e}); refusing to open PR. "
+                "Install gitleaks in the sandbox image and re-run."
+            ),
+            gitleaks_findings=[],
+            artifact_links=list(spec.artifact_links),
+        )
     if findings:
         return PullRequestResult(
             mission_id=spec.mission_id,
@@ -315,6 +344,7 @@ async def create_pull_request(
 
 __all__ = [
     "GitleaksGateError",
+    "GitleaksUnavailableError",
     "build_artifact_links",
     "compose_pr_command",
     "create_pull_request",
