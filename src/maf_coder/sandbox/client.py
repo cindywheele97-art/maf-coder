@@ -62,6 +62,14 @@ DEFAULT_WORKSPACE_PREFIX = "/workspace"
 DEFAULT_TRUNCATE_BYTES = 50_000  # per stdout / stderr stream
 DEFAULT_MAX_READ_BYTES = 1_000_000
 
+# Container resource / privilege limits (M1). Bound the two host-exhaustion
+# vectors (OOM, PID fork-bomb) and strip Linux privilege escalation. Defaults
+# are generous enough not to break a real Rust build; the operator can tune them
+# via DockerSandbox(..., mem_limit=, pids_limit=, nano_cpus=).
+DEFAULT_MEM_LIMIT = "8g"
+DEFAULT_PIDS_LIMIT = 4096
+DEFAULT_NANO_CPUS: int | None = None  # None = no CPU cap (starvation ≠ host crash)
+
 
 def _truncate(buf: str, limit: int) -> tuple[str, bool]:
     if len(buf) <= limit:
@@ -412,13 +420,65 @@ class DockerSandbox(SandboxClient):
 
     backend_name = "docker"
 
-    def __init__(self, image: str, container_name: str | None = None) -> None:
+    def __init__(
+        self,
+        image: str,
+        container_name: str | None = None,
+        *,
+        mem_limit: str = DEFAULT_MEM_LIMIT,
+        pids_limit: int = DEFAULT_PIDS_LIMIT,
+        nano_cpus: int | None = DEFAULT_NANO_CPUS,
+    ) -> None:
         self.image = image
         self.container_name = container_name or f"maf-coder-{uuid.uuid4().hex[:8]}"
+        self.mem_limit = mem_limit
+        self.pids_limit = pids_limit
+        self.nano_cpus = nano_cpus
         self._client: Any = None
         self._container: Any = None
         self._started = False
         self._volume_binds: dict[str, dict[str, str]] = {}
+
+    # -- Run configuration (shared by start + restore) --------------------
+
+    def _hardening_kwargs(self) -> dict[str, Any]:
+        """Resource + privilege limits applied to every container we run (M1).
+
+        - ``mem_limit`` / ``pids_limit``: bound the two host-exhaustion vectors
+          (OOM, fork bomb) so a runaway or hostile build can't take the host
+          down.
+        - ``cap_drop=["ALL"]`` + ``no-new-privileges``: a Rust build needs no
+          Linux capabilities and must never gain privileges; strip both.
+        - ``nano_cpus``: optional CPU cap (off by default — CPU starvation
+          degrades throughput but doesn't crash the host).
+        """
+        kwargs: dict[str, Any] = {
+            "mem_limit": self.mem_limit,
+            "pids_limit": self.pids_limit,
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
+        }
+        if self.nano_cpus is not None:
+            kwargs["nano_cpus"] = self.nano_cpus
+        return kwargs
+
+    def _run_base_kwargs(self) -> dict[str, Any]:
+        """Common ``containers.run`` kwargs shared by start() and restore().
+
+        The per-call image (positional) and ``volumes`` are supplied by each
+        caller; everything else — including the network isolation and the M1
+        hardening limits — lives here so both code paths stay in lockstep.
+        """
+        return {
+            "name": self.container_name,
+            "command": "sleep infinity",
+            "detach": True,
+            "tty": False,
+            "working_dir": DEFAULT_WORKSPACE_PREFIX,
+            "auto_remove": False,
+            "network_mode": "none",  # sandbox: no network unless tool opts in
+            **self._hardening_kwargs(),
+        }
 
     # -- Availability -----------------------------------------------------
 
@@ -469,14 +529,8 @@ class DockerSandbox(SandboxClient):
             None,
             lambda: self._client.containers.run(
                 self.image,
-                name=self.container_name,
-                command="sleep infinity",
-                detach=True,
-                tty=False,
                 volumes=volume_binds,
-                working_dir=DEFAULT_WORKSPACE_PREFIX,
-                auto_remove=False,
-                network_mode="none",  # sandbox: no network unless tool opts in
+                **self._run_base_kwargs(),
             ),
         )
         self._started = True
@@ -645,14 +699,8 @@ class DockerSandbox(SandboxClient):
             None,
             lambda: self._client.containers.run(
                 snapshot_id,
-                name=self.container_name,
-                command="sleep infinity",
-                detach=True,
-                tty=False,
                 volumes=self._volume_binds,
-                working_dir=DEFAULT_WORKSPACE_PREFIX,
-                auto_remove=False,
-                network_mode="none",
+                **self._run_base_kwargs(),
             ),
         )
         self._started = True
