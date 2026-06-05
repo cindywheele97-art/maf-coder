@@ -129,6 +129,53 @@ def test_build_sandbox_factory_unknown_value() -> None:
         cli._build_sandbox_factory("podman", cli._DEFAULT_SANDBOX_IMAGE)
 
 
+def test_resolve_sandbox_secure_by_default() -> None:
+    # No explicit choice: real runs default to docker (isolation), dry-runs to local.
+    assert cli._resolve_sandbox(None, dry_run=False) == "docker"
+    assert cli._resolve_sandbox(None, dry_run=True) == "local"
+    # Explicit --sandbox always wins, regardless of dry_run.
+    assert cli._resolve_sandbox("local", dry_run=False) == "local"
+    assert cli._resolve_sandbox("docker", dry_run=True) == "docker"
+
+
+def test_real_run_defaults_to_docker_and_fails_loud_without_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real run with no --sandbox defaults to docker; if Docker is down it fails
+    loud rather than silently running unisolated on the host (P1 hardening)."""
+    from maf_coder.sandbox import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "is_available", staticmethod(lambda: False))
+    repo = tmp_path / "r"
+    _write_repo(repo)
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(tmp_path / "missions"))
+    with pytest.raises(RuntimeError, match=r"Docker.*unavailable"):
+        cli.cmd_mission_new(
+            goal="demo", repo=repo, mission_id="m-real", router_config=router, dry_run=False
+        )
+
+
+def test_dry_run_defaults_to_local_no_docker_needed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dry-run with no --sandbox stays on local even when Docker is unavailable
+    (a dry-run executes no agent code, so isolation is moot)."""
+    from maf_coder.sandbox import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "is_available", staticmethod(lambda: False))
+    repo = tmp_path / "r"
+    _write_repo(repo)
+    router = tmp_path / "droid.yaml"
+    _write_router(router)
+    monkeypatch.setenv("MAF_MISSIONS_ROOT", str(tmp_path / "missions"))
+    out = cli.cmd_mission_new(
+        goal="demo", repo=repo, mission_id="m-dry", router_config=router, dry_run=True
+    )
+    assert out["dry_run"] is True  # completed without Docker
+
+
 def test_cmd_mission_new_sandbox_docker_threads_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

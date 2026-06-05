@@ -45,15 +45,16 @@ active on a real run.
   - `openai/gpt-5` → **`OPENAI_API_KEY`**
   - `google/gemini-2.5-pro`, `google/gemini-2.5-flash` (Smart Router judge) → **`GEMINI_API_KEY`**
   (LiteLLM reads these from the environment. Missing one → that role/fallback fails mid-mission.)
-- **A throwaway target repo.** The default sandbox (**`LocalShellSandbox`**) runs
-  `cargo`/shell commands **directly on the host filesystem in `--repo`, with no
-  container isolation** and only app-level network policy. So:
-  **always point `--repo` at a fresh disposable clone or git worktree**, never
-  your real working tree — unless you opt into Docker isolation with
-  **`--sandbox docker`** (the default is `--sandbox local`). `--sandbox docker`
-  runs in `DockerSandbox` (the rust Dockerfile image, default `maf-coder:rust-sandbox`)
-  and **fails loud** if the daemon is down — build the image first with
-  `bash scripts/build_sandbox.sh`.
+- **Sandbox: secure by default.** A **real run** (`--no-dry-run`) defaults to
+  **`--sandbox docker`** (`DockerSandbox`, image `maf-coder:rust-sandbox`) so the
+  autonomous agents run `cargo`/shell **inside an isolated container**, not on your
+  host. It **fails loud** if the daemon is down — so **build the image first**:
+  `bash scripts/build_sandbox.sh` (first build is 30–60 min). Dry-runs / `mission
+  profile` default to **`local`** (they execute no agent code, so no Docker needed).
+- **A throwaway target repo.** Even with Docker, point `--repo` at a fresh
+  disposable clone or worktree. If you deliberately use **`--sandbox local`** (host
+  shell, **no isolation** — only app-level network policy), a disposable `--repo` is
+  mandatory: the Coder edits it in place on the host.
 - **Budget mindset.** A real Opus/GPT-5 multi-agent mission burns real money.
   Keep the first task trivial.
 
@@ -180,7 +181,7 @@ maf-coder metrics --markdown
 ## 7. Cost & safety guardrails (read before the first `--no-dry-run`)
 
 1. **Trivial task + tiny repo** for run #1. You're testing the *machinery*, not building a feature.
-2. **Disposable `--repo`** — the Coder edits it in place via `LocalShellSandbox` (no isolation).
+2. **Disposable `--repo`** — even in Docker (the default), keep `--repo` throwaway; with `--sandbox local` it's mandatory, since the Coder edits it in place on the host. **Build the sandbox image first** (`bash scripts/build_sandbox.sh`) so the default `docker` run doesn't fail loud.
 3. **Set a budget** with `--budget-usd` on `mission new` (or edit the auto-seeded `budget.yaml`). Start low, e.g. `--budget-usd 5`. The budget guard acts at four bands of the budget (read live from `mission_state.budget_mode` each tick):
    - **50%** — annotate only (a `BUDGET_ALERT` event; no behavior change).
    - **80%** — `budget_mode → cost_conscious`, which is now *enforced*: the Scheduler serializes every role (no parallel research/security/review) and caps each task's retries to 1, and validators switch to their **fallback** model. ⚠️ For that model swap to actually save money, order each validator's `fallback:` in `config/droid_whispering.yaml` so the first entry is the cheaper model (the 异-provider rule is preserved regardless).
@@ -203,9 +204,11 @@ maf-coder metrics --markdown
   `tasks.yaml`'s `parent_milestone` fields — the first planned milestone not yet
   in `completed_milestones`), falling back to a synthetic index only for the
   bootstrap/planning turn before the plan exists.
-- **Docker sandbox is opt-in** — `mission new`/`resume` default to `--sandbox local`
-  (unisolated host shell). Pass `--sandbox docker` (after `bash scripts/build_sandbox.sh`)
-  for an isolated container; it fails loud if the daemon is down.
+- **Docker is the default for real runs** — `mission new --no-dry-run` / `resume`
+  default to `--sandbox docker` (isolated container; fails loud if the daemon is
+  down, so `bash scripts/build_sandbox.sh` first). Dry-runs default to `local` (no
+  agent code runs). Use `--sandbox local` to deliberately run a real mission on the
+  unisolated host shell.
 - **`save_retro` / `create_pr` are Orchestrator *tools*** — they fire only if the
   Orchestrator's prompt/plan actually calls them at mission end; verify it does,
   or invoke `maf-coder pr` manually (above).

@@ -104,6 +104,20 @@ def _build_sandbox_factory(sandbox: str, image: str) -> Callable[[], SandboxClie
     )
 
 
+def _resolve_sandbox(sandbox: str | None, *, dry_run: bool) -> str:
+    """Resolve the effective sandbox backend (secure-by-default).
+
+    An explicit ``--sandbox`` always wins. Otherwise a REAL run defaults to
+    ``docker`` (container isolation — autonomous agents must not run shell/cargo
+    on the host), while a dry-run defaults to ``local``: a dry-run executes no
+    agent code, so isolation is moot and Docker should not gate the cheap
+    profile/dry-run/smoke path.
+    """
+    if sandbox is not None:
+        return sandbox
+    return "local" if dry_run else "docker"
+
+
 def cmd_mission_new(
     *,
     goal: str,
@@ -113,7 +127,7 @@ def cmd_mission_new(
     dry_run: bool = True,
     coder_provider: str | None = None,
     budget_usd: float | None = None,
-    sandbox: str = "local",
+    sandbox: str | None = None,
     sandbox_image: str = _DEFAULT_SANDBOX_IMAGE,
 ) -> dict[str, Any]:
     """Bootstrap a new mission. Returns a JSON-serializable summary.
@@ -139,7 +153,9 @@ def cmd_mission_new(
         dry_run=dry_run,
         coder_provider_in_use=coder_provider,
         total_budget_usd=budget_usd,
-        sandbox_factory=_build_sandbox_factory(sandbox, sandbox_image),
+        sandbox_factory=_build_sandbox_factory(
+            _resolve_sandbox(sandbox, dry_run=dry_run), sandbox_image
+        ),
     )
     driver = MissionDriver(mission_id=mid, config=cfg)
     asyncio.run(driver.start())
@@ -215,12 +231,13 @@ def cmd_resume(
     from_milestone: str | None = None,
     router_config: Path | None = None,
     dry_run: bool = True,
-    sandbox: str = "local",
+    sandbox: str | None = None,
     sandbox_image: str = _DEFAULT_SANDBOX_IMAGE,
 ) -> dict[str, Any]:
     """Resume an existing mission from a checkpoint. JSON-serializable summary.
 
-    `sandbox` must match the backend the mission ran under (see cmd_mission_new).
+    `sandbox` must match the backend the mission ran under (see cmd_mission_new);
+    defaults to docker for a real resume, local for a dry-run resume.
     """
     from .orchestrator import MissionConfig, MissionDriver
 
@@ -230,7 +247,9 @@ def cmd_resume(
         router_config=(router_config or _default_router_config()).resolve(),
         goal="(resume)",
         dry_run=dry_run,
-        sandbox_factory=_build_sandbox_factory(sandbox, sandbox_image),
+        sandbox_factory=_build_sandbox_factory(
+            _resolve_sandbox(sandbox, dry_run=dry_run), sandbox_image
+        ),
     )
     driver = MissionDriver(mission_id=mission_id, config=cfg)
     asyncio.run(driver.resume(from_milestone=from_milestone))
@@ -440,11 +459,12 @@ if _TYPER_AVAILABLE:
             help="Full mission budget in USD, seeded into budget.yaml (the budget "
             "guard's ceiling). Default: the guard's built-in default.",
         ),
-        sandbox: str = typer.Option(
-            "local",
+        sandbox: str | None = typer.Option(
+            None,
             "--sandbox",
-            help="Execution backend: 'local' (host shell, no isolation) or "
-            "'docker' (isolated container).",
+            help="Execution backend: 'docker' (isolated container) or 'local' "
+            "(host shell, no isolation). Default: docker for a real run, local "
+            "for a dry-run (which executes no agent code).",
         ),
         sandbox_image: str = typer.Option(
             _DEFAULT_SANDBOX_IMAGE,
@@ -509,11 +529,11 @@ if _TYPER_AVAILABLE:
             "--dry-run/--no-dry-run",
             help="Dry run restores state+sandbox without re-running execution.",
         ),
-        sandbox: str = typer.Option(
-            "local",
+        sandbox: str | None = typer.Option(
+            None,
             "--sandbox",
-            help="Execution backend; must match the mission's original backend "
-            "('local' or 'docker').",
+            help="Execution backend; should match the mission's original backend "
+            "('docker' or 'local'). Default: docker for a real resume, local for dry-run.",
         ),
         sandbox_image: str = typer.Option(
             _DEFAULT_SANDBOX_IMAGE,
