@@ -299,3 +299,85 @@ class TestCostEstimation:
 
     def test_resolve_zero_when_no_cost_and_no_tokens(self) -> None:
         assert resolve_cost_usd(None, "mimo/custom-v1", 0, 0) == 0.0
+
+
+# -- Custom per-model endpoints (MiMo / DeepSeek-/anthropic) -----------------
+
+
+class TestCustomEndpoint:
+    def test_endpoint_fields_default_none(self, minimal_config: Path) -> None:
+        cfg = ModelRouter(minimal_config).get_primary_model("coder_worker")
+        assert cfg.api_base is None
+        assert cfg.api_key_env is None
+
+    def test_parses_api_base_and_key_env(self, tmp_path: Path) -> None:
+        p = tmp_path / "d.yaml"
+        p.write_text(
+            "version: 1\n"
+            "roles:\n"
+            "  coder_worker:\n"
+            "    primary:\n"
+            "      model: anthropic/mimo-v2.5-pro\n"
+            "      temperature: 0.2\n"
+            "      max_tokens: 8000\n"
+            "      api_base: https://token-plan-cn.example.com/anthropic\n"
+            "      api_key_env: MIMO_API_KEY\n"
+            "    fallback: []\n"
+        )
+        cfg = ModelRouter(p).get_primary_model("coder_worker")
+        assert cfg.api_base == "https://token-plan-cn.example.com/anthropic"
+        assert cfg.api_key_env == "MIMO_API_KEY"
+
+    def test_resolved_api_key_reads_named_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from maf_coder.models import ModelConfig
+
+        monkeypatch.setenv("MIMO_TEST_KEY", "sk-fake-mimo")
+        assert ModelConfig(model="anthropic/x", api_key_env="MIMO_TEST_KEY").resolved_api_key() == (
+            "sk-fake-mimo"
+        )
+        # No api_key_env → None (LiteLLM default per-provider resolution).
+        assert ModelConfig(model="anthropic/x").resolved_api_key() is None
+
+    @pytest.mark.asyncio
+    async def test_complete_forwards_api_base_and_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """complete() must hand the custom api_base + resolved key to LiteLLM."""
+        import sys
+        import types
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("MIMO_TEST_KEY", "sk-fake-mimo")
+        captured: dict[str, object] = {}
+
+        async def fake_acompletion(**kw):  # type: ignore[no-untyped-def]
+            captured.update(kw)
+            msg = SimpleNamespace(content="ok")
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=msg)],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+                _response_cost=0.0,
+            )
+
+        # complete() does `from litellm import acompletion`; patch the attribute.
+        litellm_mod = sys.modules.get("litellm") or types.ModuleType("litellm")
+        monkeypatch.setattr(litellm_mod, "acompletion", fake_acompletion, raising=False)
+        monkeypatch.setitem(sys.modules, "litellm", litellm_mod)
+
+        p = tmp_path / "d.yaml"
+        p.write_text(
+            "version: 1\n"
+            "roles:\n"
+            "  coder_worker:\n"
+            "    primary:\n"
+            "      model: anthropic/mimo-v2.5-pro\n"
+            "      temperature: 0.2\n"
+            "      max_tokens: 100\n"
+            "      api_base: https://mimo.example/anthropic\n"
+            "      api_key_env: MIMO_TEST_KEY\n"
+            "    fallback: []\n"
+        )
+        router = ModelRouter(p)
+        await router.complete("coder_worker", messages=[{"role": "user", "content": "hi"}])
+        assert captured["api_base"] == "https://mimo.example/anthropic"
+        assert captured["api_key"] == "sk-fake-mimo"

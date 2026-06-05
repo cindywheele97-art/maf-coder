@@ -18,6 +18,7 @@ exercise the routing logic without needing a real API key or network.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,34 @@ class ModelConfig(BaseModel):
     model: str = Field(description="LiteLLM model string, e.g. 'anthropic/claude-opus-4-7'")
     temperature: float = 0.2
     max_tokens: int = 8000
+    api_base: str | None = Field(
+        default=None,
+        description="Custom endpoint URL for OpenAI/Anthropic-compatible providers "
+        "(e.g. MiMo, DeepSeek). Non-secret; lives in config. None → LiteLLM default.",
+    )
+    api_key_env: str | None = Field(
+        default=None,
+        description="Name of the env var holding THIS model's API key (e.g. "
+        "'MIMO_API_KEY'). The key itself is never stored in config — only the var "
+        "name. None → LiteLLM's default per-provider key resolution.",
+    )
+
+    def resolved_api_key(self) -> str | None:
+        """The API key read from the env var named by ``api_key_env``, or None.
+
+        Keeps the secret in the environment, never in config. Warns (does not
+        raise) when the var is named but empty, so a misconfig surfaces in logs
+        rather than as an opaque auth error mid-mission.
+        """
+        if not self.api_key_env:
+            return None
+        key = os.environ.get(self.api_key_env)
+        if not key:
+            logger.warning(
+                "ModelConfig: api_key_env=%r is set but that env var is empty/unset",
+                self.api_key_env,
+            )
+        return key
 
 
 class RoleConfig(BaseModel):
@@ -410,6 +439,8 @@ class ModelRouter:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=judge_model.temperature,
                 max_tokens=judge_model.max_tokens,
+                api_base=judge_model.api_base,
+                api_key=judge_model.resolved_api_key(),
             )
             return resp.choices[0].message.content or ""
 
@@ -617,6 +648,8 @@ class ModelRouter:
                     temperature=temperature if temperature is not None else model_cfg.temperature,
                     max_tokens=max_tokens if max_tokens is not None else model_cfg.max_tokens,
                     tools=tools,
+                    api_base=model_cfg.api_base,
+                    api_key=model_cfg.resolved_api_key(),
                 )
                 latency = time.monotonic() - t0
                 # LiteLLM returns an OpenAI-compatible response object

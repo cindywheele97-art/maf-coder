@@ -312,6 +312,8 @@ class BaseAgent(ABC, Generic[T]):
                     model_id=model_cfg.model,
                     temperature=model_cfg.temperature,
                     max_tokens=model_cfg.max_tokens,
+                    api_base=model_cfg.api_base,
+                    api_key=model_cfg.resolved_api_key(),
                     ctx=ctx,
                 ),
                 timeout=float(task.budget.max_runtime_sec),
@@ -424,6 +426,8 @@ class BaseAgent(ABC, Generic[T]):
         temperature: float,
         max_tokens: int,
         ctx: TaskContext,
+        api_base: str | None = None,
+        api_key: str | None = None,
     ) -> _RawResult:
         """Invoke the OpenAI Agents SDK Runner.
 
@@ -449,7 +453,12 @@ class BaseAgent(ABC, Generic[T]):
             "tools": wrapped_tools,
         }
         if _sdk.LitellmModel is not None:
-            agent_kwargs["model"] = _sdk.LitellmModel(model_id)
+            # base_url/api_key route this role to a custom OpenAI/Anthropic-
+            # compatible endpoint (e.g. MiMo, DeepSeek); both None → LiteLLM's
+            # default per-provider resolution, identical to before.
+            agent_kwargs["model"] = _sdk.LitellmModel(
+                model_id, base_url=api_base, api_key=api_key
+            )
         if _sdk.ModelSettings is not None:
             agent_kwargs["model_settings"] = _sdk.ModelSettings(
                 temperature=temperature, max_tokens=max_tokens
