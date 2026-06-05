@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from maf_coder.orchestrator.project_profiler import profile_project
+import pytest
+
+from maf_coder.orchestrator.project_profiler import (
+    ProjectProfileError,
+    profile_project,
+)
 from maf_coder.schemas import ProjectType
 
 
@@ -18,6 +23,27 @@ def test_missing_cargo_toml_returns_placeholder(tmp_path: Path) -> None:
     assert profile.project_type == ProjectType.LIBRARY
     assert profile.crate_layout == "single"
     assert len(profile.crates) == 1
+
+
+def test_strict_missing_cargo_toml_raises(tmp_path: Path) -> None:
+    # Real runs must fail loud, not silently mis-profile a non-Cargo dir.
+    with pytest.raises(ProjectProfileError):
+        profile_project(tmp_path, strict=True)
+
+
+def test_strict_malformed_cargo_toml_raises(tmp_path: Path) -> None:
+    _write(tmp_path / "Cargo.toml", "this is = = not valid toml [[[")
+    with pytest.raises(ProjectProfileError):
+        profile_project(tmp_path, strict=True)
+
+
+def test_strict_valid_cargo_toml_profiles_normally(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "demo"\n\n[[bin]]\nname = "demo"\n',
+    )
+    profile = profile_project(tmp_path, strict=True)
+    assert profile.crates  # parsed a real crate, no exception
 
 
 def test_single_binary_cli_project(tmp_path: Path) -> None:
