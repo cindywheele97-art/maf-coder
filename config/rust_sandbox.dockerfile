@@ -15,11 +15,9 @@
 FROM rust:1.85-bookworm AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    CARGO_HOME=/cargo-cache \
-    RUSTUP_HOME=/cargo-cache/rustup \
+    CARGO_HOME=/usr/local/cargo \
     CARGO_TARGET_DIR=/target-cache \
     SCCACHE_DIR=/sccache \
-    RUSTC_WRAPPER=sccache \
     PATH=/cargo-cache/bin:/usr/local/cargo/bin:/root/.cargo/bin:$PATH
 
 # ============================================================================
@@ -59,10 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ============================================================================
 # Rust 工具链：stable + nightly + 关键 components
 # ============================================================================
-RUN rustup toolchain install stable --component clippy rustfmt rust-analyzer rust-src \
-    && rustup toolchain install nightly --component clippy rustfmt rust-src miri \
-    && rustup target add wasm32-unknown-unknown wasm32-wasi \
-    && rustup default stable
+RUN rustup component add clippy rustfmt rust-analyzer rust-src \
+    && rustup toolchain install nightly --component clippy --component rustfmt --component rust-src --component miri \
+    && rustup target add wasm32-unknown-unknown wasm32-wasip1
 
 # ============================================================================
 # Cargo 工具全家桶
@@ -78,26 +75,24 @@ RUN rustup toolchain install stable --component clippy rustfmt rust-analyzer rus
 # udeps: 未使用依赖检测（与 machete 互补）
 # bloat: 二进制大小分析（BehaviorValidator wasm 探针用）
 # ============================================================================
-RUN cargo install sccache --locked && \
-    cargo install cargo-audit --locked && \
-    cargo install cargo-deny --locked && \
-    cargo install cargo-geiger --locked && \
-    cargo install cargo-expand --locked && \
-    cargo install cargo-machete --locked && \
-    cargo install cargo-outdated --locked && \
-    cargo install cargo-nextest --locked && \
-    cargo install cargo-watch --locked && \
-    cargo install cargo-udeps --locked && \
-    cargo install cargo-bloat --locked && \
-    rm -rf /cargo-cache/registry/cache /cargo-cache/registry/src
+RUN cargo install sccache --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-audit --version 0.22.1 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-deny --version 0.18.3 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-geiger --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-expand --version 1.0.100 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-machete --version 0.7.0 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-outdated --version 0.18.0 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-nextest --version 0.9.87 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-watch --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-udeps --version 0.1.50 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install cargo-bloat --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
 
 # ============================================================================
 # WebAssembly 工具链
 # ============================================================================
-RUN cargo install wasm-pack --locked && \
-    cargo install wasm-bindgen-cli --locked && \
-    cargo install twiggy --locked && \
-    rm -rf /cargo-cache/registry/cache /cargo-cache/registry/src
+RUN cargo install wasm-pack --version 0.12.1 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install wasm-bindgen-cli --version 0.2.93 --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
+RUN cargo install twiggy --locked && rm -rf /usr/local/cargo/registry/cache /usr/local/cargo/registry/src
 
 # ============================================================================
 # Node.js（wasm-pack test --node 需要 / 部分 build.rs 需要）
@@ -178,6 +173,8 @@ RUN cargo --version && \
 # ----------------------------------------------------------------------------
 # 多天任务下容器是长生命周期的，host 端通过 exec 触发各 Worker 操作
 # ============================================================================
+ENV CARGO_HOME=/cargo-cache \
+    RUSTC_WRAPPER=sccache
 CMD ["sleep", "infinity"]
 
 

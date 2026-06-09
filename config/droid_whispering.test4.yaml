@@ -1,0 +1,168 @@
+# MAF-Coder Droid Whispering — 4-MODEL TEST CONFIG (custom endpoints only)
+# ===========================================================================
+# Built for a live shakedown using ONLY four custom-endpoint test models, so no
+# real Anthropic/OpenAI/Google account is needed. Provider strings are chosen so
+# the 异-provider rule holds: coder = 'anthropic' (MiMo), every validator ≠ that.
+#
+#   Model (addressed as)          provider  endpoint                       key env
+#   ----------------------------- --------- ------------------------------ ---------------------
+#   anthropic/mimo-v2.5-pro       anthropic token-plan-cn.xiaomimimo.com/anthropic  MIMO_API_KEY
+#   deepseek/deepseek-chat        deepseek  api.deepseek.com (native)      DEEPSEEK_API_KEY
+#   openai/gemini-3.5-flash       openai    new.12ai.org/v1 (OpenAI-compat) TWELVEAI_GEMINI_KEY
+#   openai/claude-sonnet-4-6-c    openai    new.12ai.org/v1 (OpenAI-compat) TWELVEAI_CLAUDE_KEY
+#
+# Keys live ONLY in env (var NAMES below). NEVER put a key value in this file.
+# Smart-router is DISABLED (its stock tiers point at real Anthropic).
+# NOTE: model-ids / the new.12ai.org API format are unverified guesses — run
+#   scripts/check_endpoints.py against this file BEFORE launching a paid mission.
+
+version: 1
+
+roles:
+
+  orchestrator:
+    # Planning quality sets the floor for the whole mission → strongest available.
+    primary:
+      model: openai/claude-sonnet-4-6-c
+      temperature: 0.2
+      max_tokens: 16000
+      api_base: https://new.12ai.org/v1
+      api_key_env: TWELVEAI_CLAUDE_KEY
+    fallback:
+      - model: deepseek/deepseek-chat
+        temperature: 0.2
+        max_tokens: 16000
+        api_key_env: DEEPSEEK_API_KEY
+
+  research_worker:
+    primary:
+      model: deepseek/deepseek-chat
+      temperature: 0.2
+      max_tokens: 12000
+      api_key_env: DEEPSEEK_API_KEY
+    fallback:
+      - model: openai/gemini-3.5-flash
+        temperature: 0.2
+        max_tokens: 12000
+        api_base: https://new.12ai.org/v1
+        api_key_env: TWELVEAI_GEMINI_KEY
+
+  coder_worker:
+    # MiMo. Anthropic-format endpoint → provider 'anthropic' → validators must
+    # stay off 'anthropic' (they do). LiteLLM can't price it → budget estimates (F3).
+    primary:
+      model: anthropic/mimo-v2.5-pro
+      temperature: 0.3
+      max_tokens: 32000
+      api_base: https://token-plan-cn.xiaomimimo.com/anthropic
+      api_key_env: MIMO_API_KEY
+    fallback:
+      - model: anthropic/mimo-v2.5
+        temperature: 0.3
+        max_tokens: 32000
+        api_base: https://token-plan-cn.xiaomimimo.com/anthropic
+        api_key_env: MIMO_API_KEY
+
+  security_worker:
+    primary:
+      model: openai/gemini-3.5-flash
+      temperature: 0.0
+      max_tokens: 8000
+      api_base: https://new.12ai.org/v1
+      api_key_env: TWELVEAI_GEMINI_KEY
+    fallback:
+      - model: deepseek/deepseek-chat
+        temperature: 0.0
+        max_tokens: 8000
+        api_key_env: DEEPSEEK_API_KEY
+
+  review_validator:
+    # 异-provider hard constraint: never 'anthropic' (the coder's provider).
+    primary:
+      model: deepseek/deepseek-chat
+      temperature: 0.0
+      max_tokens: 8000
+      api_key_env: DEEPSEEK_API_KEY
+    fallback:
+      - model: openai/gemini-3.5-flash
+        temperature: 0.0
+        max_tokens: 8000
+        api_base: https://new.12ai.org/v1
+        api_key_env: TWELVEAI_GEMINI_KEY
+    constraints:
+      forbidden_providers: [anthropic]
+
+  adversarial_subagent:
+    primary:
+      model: openai/gemini-3.5-flash
+      temperature: 0.0
+      max_tokens: 6000
+      api_base: https://new.12ai.org/v1
+      api_key_env: TWELVEAI_GEMINI_KEY
+    fallback:
+      - model: deepseek/deepseek-chat
+        temperature: 0.0
+        max_tokens: 6000
+        api_key_env: DEEPSEEK_API_KEY
+    constraints:
+      forbidden_providers: [anthropic]
+
+  behavior_validator:
+    primary:
+      model: openai/gemini-3.5-flash
+      temperature: 0.1
+      max_tokens: 8000
+      api_base: https://new.12ai.org/v1
+      api_key_env: TWELVEAI_GEMINI_KEY
+    fallback:
+      - model: deepseek/deepseek-chat
+        temperature: 0.1
+        max_tokens: 8000
+        api_key_env: DEEPSEEK_API_KEY
+    constraints:
+      forbidden_providers: [anthropic]
+
+# Smart-router OFF — stock tiers point at real Anthropic, which this config avoids.
+smart_router:
+  enabled: false
+
+budgets:
+  default_alert_threshold_usd: 100.0
+  thresholds:
+    annotate: 0.50
+    warn: 0.80
+    pause: 1.00
+    force_stop: 1.50
+  cost_conscious_mode:
+    disable_parallel_research: true
+    validator_use_fallback: true
+    max_retries_per_task: 1
+    max_concurrent_workers: 1
+  per_task:
+    max_tokens_in: 100000
+    max_tokens_out: 32000
+    max_runtime_sec: 600
+  per_mission:
+    expected_wall_clock_hours: 24
+
+network:
+  policy: open
+  rate_limits:
+    "crates.io": 60
+    "docs.rs": 60
+    "api.github.com": 30
+    "raw.githubusercontent.com": 60
+    default: 10
+  max_requests_per_mission: 1000
+  forbidden_patterns:
+    - "*.exe"
+    - "*.dll"
+    - "*.so"
+    - "*.dylib"
+  egress_log: "missions/{mission_id}/egress.jsonl"
+
+tracing:
+  openai_sdk_tracing: true
+  local_jsonl_path: "missions/{mission_id}/events.jsonl"
+  sentry_dsn: null
+  capture_full_prompts: false
