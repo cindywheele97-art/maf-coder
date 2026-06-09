@@ -62,7 +62,7 @@ echo
 echo "Building $TAG from $DOCKERFILE..."
 echo "(this can take 30-60 minutes on first run — go make tea)"
 echo
-docker build -t "$TAG" -f "$DOCKERFILE" "${EXTRA_ARGS[@]}" .
+docker build -t "$TAG" -f "$DOCKERFILE" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} .
 
 # -- Smoke check ---------------------------------------------------------------
 # Verify the key tools that future Workers and Validators depend on actually
