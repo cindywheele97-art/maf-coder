@@ -93,10 +93,22 @@ def _try_import() -> None:
             ModelSettings = getattr(settings_mod, "ModelSettings", None)
         except Exception:
             ModelSettings = getattr(mod, "ModelSettings", None)
-        try:
-            models_mod = __import__(f"{pkg}.models", fromlist=["LitellmModel"])
-            LitellmModel = getattr(models_mod, "LitellmModel", None)
-        except Exception:
+        # LitellmModel ships in the optional `litellm` extra and its import path
+        # has moved between releases: current `agents` exposes it at
+        # `agents.extensions.models.litellm_model`; older layouts used
+        # `{pkg}.models`. Try the candidates in order — the wrong path silently
+        # leaving this None makes every role fall back to the SDK's native OpenAI
+        # provider (a confusing "missing OPENAI_API_KEY" crash mid-mission).
+        LitellmModel = None
+        for sub in (f"{pkg}.extensions.models.litellm_model", f"{pkg}.models"):
+            try:
+                lm_mod = __import__(sub, fromlist=["LitellmModel"])
+            except Exception:
+                continue
+            LitellmModel = getattr(lm_mod, "LitellmModel", None)
+            if LitellmModel is not None:
+                break
+        if LitellmModel is None:
             LitellmModel = getattr(mod, "LitellmModel", None)
         SDK_AVAILABLE = True
         SDK_PACKAGE = pkg

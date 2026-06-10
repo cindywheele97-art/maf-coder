@@ -528,7 +528,9 @@ async def test_execute_sdk_estimates_cost_for_unpriced_model(
     monkeypatch.setattr(sdk, "SDK_AVAILABLE", True)
     monkeypatch.setattr(sdk, "wrap_for_sdk", lambda t: t)
     monkeypatch.setattr(sdk, "Agent", lambda **kw: object())
-    monkeypatch.setattr(sdk, "LitellmModel", None)
+    # LitellmModel must be present (it's now required); a stub is enough here —
+    # this test exercises cost estimation, not the model wiring.
+    monkeypatch.setattr(sdk, "LitellmModel", lambda *a, **k: object())
     monkeypatch.setattr(sdk, "ModelSettings", None)
     monkeypatch.setattr(sdk, "Runner", SimpleNamespace(run=fake_run))
 
@@ -656,3 +658,60 @@ def test_wrap_for_sdk_tolerates_extra_forbid_model_in_union() -> None:
     # Before the strict_mode=False fix this raised agents.exceptions.UserError.
     wrapped = sdk.wrap_for_sdk(_extra_forbid_tool)
     assert wrapped is not None
+
+
+def test_real_litellm_model_is_importable() -> None:
+    """Regression — caught by the second live shakedown hop.
+
+    Every role's model is a LiteLLM-style string (openai/…, deepseek/…,
+    anthropic/…) that must be wrapped in the SDK's LitellmModel. The class moved
+    to `agents.extensions.models.litellm_model`; _sdk previously looked only in
+    `agents.models`, so _sdk.LitellmModel silently resolved to None — and
+    _execute_sdk then built an agent with NO model, making the SDK fall back to
+    its native OpenAI provider and crash with 'missing OPENAI_API_KEY'. Lock the
+    real class in so the import path can't regress.
+    """
+    import maf_coder.agents._sdk as sdk
+
+    if not sdk.SDK_AVAILABLE:
+        pytest.skip("OpenAI Agents SDK not installed")
+
+    assert sdk.LitellmModel is not None
+    assert sdk.LitellmModel.__name__ == "LitellmModel"
+
+
+@pytest.mark.asyncio
+async def test_execute_sdk_fails_loud_when_litellm_model_missing(
+    tmp_path, store, event_log, prompt_file, monkeypatch
+) -> None:
+    """If LitellmModel can't be imported, _execute_sdk must fail loud naming the
+    litellm extra — not silently build a model-less agent that falls back to the
+    SDK's native OpenAI provider (the misleading failure mode of the live run)."""
+    import maf_coder.agents._sdk as sdk
+
+    monkeypatch.setattr(sdk, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk, "LitellmModel", None)
+    monkeypatch.setattr(sdk, "wrap_for_sdk", lambda t: t)
+    monkeypatch.setattr(sdk, "ModelSettings", None)
+
+    cfg = tmp_path / "r.yaml"
+    cfg.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  coder_worker:\n"
+        "    primary:\n"
+        "      model: openai/some-model\n"
+        "      temperature: 0.2\n"
+        "      max_tokens: 100\n"
+        "    fallback: []\n"
+    )
+    agent = _RealSDKAgent(
+        prompt_path=prompt_file,
+        store=store,
+        event_log=event_log,
+        router=ModelRouter(cfg),
+        sandbox=_DummySandbox(),
+    )
+    result = await agent.run(_make_task(), mission_id=store.mission_id)
+    assert result.errored is True
+    assert "litellm" in (result.error_reason or "").lower()
