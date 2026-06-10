@@ -452,13 +452,22 @@ class BaseAgent(ABC, Generic[T]):
             "instructions": instructions,
             "tools": wrapped_tools,
         }
-        if _sdk.LitellmModel is not None:
-            # base_url/api_key route this role to a custom OpenAI/Anthropic-
-            # compatible endpoint (e.g. MiMo, DeepSeek); both None → LiteLLM's
-            # default per-provider resolution, identical to before.
-            agent_kwargs["model"] = _sdk.LitellmModel(
-                model_id, base_url=api_base, api_key=api_key
+        if _sdk.LitellmModel is None:
+            # Every role's model is a LiteLLM-style string (openai/…, deepseek/…,
+            # anthropic/…) that must go through LitellmModel. If it failed to
+            # import, building an agent without a model makes the SDK silently
+            # fall back to its native OpenAI provider and crash with a misleading
+            # "missing OPENAI_API_KEY". Fail loud with the real cause instead.
+            raise RuntimeError(
+                "OpenAI Agents SDK is installed but LitellmModel could not be "
+                "imported — install the litellm extra: "
+                "pip install 'openai-agents[litellm]'. Without it every role "
+                "falls back to the SDK's native OpenAI provider."
             )
+        # base_url/api_key route this role to a custom OpenAI/Anthropic-compatible
+        # endpoint (e.g. MiMo, DeepSeek); both None → LiteLLM's default
+        # per-provider resolution.
+        agent_kwargs["model"] = _sdk.LitellmModel(model_id, base_url=api_base, api_key=api_key)
         if _sdk.ModelSettings is not None:
             agent_kwargs["model_settings"] = _sdk.ModelSettings(
                 temperature=temperature, max_tokens=max_tokens
