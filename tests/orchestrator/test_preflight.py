@@ -76,6 +76,18 @@ class TestRunPreflight:
         assert report.ok is False
         assert _status(report, "OPENAI_API_KEY") == "fail"
 
+    def test_placeholder_key_with_non_ascii_fails(self, tmp_path: Path) -> None:
+        # A truncated placeholder like 'sk-…' (the ellipsis U+2026 is non-ASCII)
+        # can't be encoded into the HTTP Authorization header — it crashes deep in
+        # httpx mid-mission. Preflight must reject it up front with a clear reason.
+        env = dict(_ALL_KEYS)
+        env["OPENAI_API_KEY"] = "sk-UuoA…"
+        report = run_preflight(_cfg(tmp_path), sandbox="local", env=env)
+        assert report.ok is False
+        check = next(c for c in report.checks if "OPENAI_API_KEY" in c.name)
+        assert check.status == "fail"
+        assert "non-ASCII" in check.detail
+
     def test_google_accepts_either_env_var(self, tmp_path: Path) -> None:
         env = {"ANTHROPIC_API_KEY": "x", "OPENAI_API_KEY": "x", "GOOGLE_API_KEY": "x"}
         report = run_preflight(
