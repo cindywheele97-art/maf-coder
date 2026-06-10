@@ -21,24 +21,28 @@ version: 1
 roles:
 
   orchestrator:
-    # Planning quality sets the floor for the whole mission → strongest available.
+    # claude-sonnet-4-6-c via the 12ai proxy does NOT emit tool calls (verified
+    # with `check_endpoints.py --tools`), so it can't drive the planning DAG —
+    # it just chats and the mission stalls. DeepSeek tool-calls and plans well;
+    # gemini-3.5-flash (also tool-calling) as fallback. (max_tokens 8000: DeepSeek
+    # caps output at 8192.)
     primary:
-      model: openai/claude-sonnet-4-6-c
+      model: deepseek/deepseek-chat
       temperature: 0.2
-      max_tokens: 16000
-      api_base: https://new.12ai.org/v1
-      api_key_env: TWELVEAI_CLAUDE_KEY
+      max_tokens: 8000
+      api_key_env: DEEPSEEK_API_KEY
     fallback:
-      - model: deepseek/deepseek-chat
+      - model: openai/gemini-3.5-flash
         temperature: 0.2
-        max_tokens: 16000
-        api_key_env: DEEPSEEK_API_KEY
+        max_tokens: 8000
+        api_base: https://new.12ai.org/v1
+        api_key_env: TWELVEAI_GEMINI_KEY
 
   research_worker:
     primary:
       model: deepseek/deepseek-chat
       temperature: 0.2
-      max_tokens: 12000
+      max_tokens: 8000  # DeepSeek caps output at 8192
       api_key_env: DEEPSEEK_API_KEY
     fallback:
       - model: openai/gemini-3.5-flash
