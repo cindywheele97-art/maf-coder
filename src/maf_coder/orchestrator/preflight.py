@@ -141,15 +141,37 @@ def run_preflight(
     # 2. Provider API keys for every model in the routing chains.
     if router is not None:
         for req in _required_keys(router):
-            present = any(env.get(v) for v in req.env_vars)
-            checks.append(
-                PreflightCheck(
-                    f"api key {req.label}",
-                    PASS if present else FAIL,
-                    f"required by {req.reason}" + ("" if present else " — not set"),
-                    "" if present else f"export {req.env_vars[0]}=...",
+            value = next((env[v] for v in req.env_vars if env.get(v)), None)
+            if value is None:
+                checks.append(
+                    PreflightCheck(
+                        f"api key {req.label}",
+                        FAIL,
+                        f"required by {req.reason} — not set",
+                        f"export {req.env_vars[0]}=...",
+                    )
                 )
-            )
+            elif not value.isascii():
+                # A non-ASCII key value can't be ASCII-encoded into the HTTP
+                # Authorization header — it crashes deep in httpx mid-mission.
+                # The usual cause is pasting a truncated placeholder like "sk-…".
+                checks.append(
+                    PreflightCheck(
+                        f"api key {req.label}",
+                        FAIL,
+                        f"required by {req.reason} — value has non-ASCII characters "
+                        "(did you paste a placeholder like 'sk-…'?)",
+                        f"re-export {req.env_vars[0]} with the real key value",
+                    )
+                )
+            else:
+                checks.append(
+                    PreflightCheck(
+                        f"api key {req.label}",
+                        PASS,
+                        f"required by {req.reason}",
+                    )
+                )
     else:
         checks.append(
             PreflightCheck(
