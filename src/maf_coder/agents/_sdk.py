@@ -52,10 +52,18 @@ def wrap_for_sdk(tool: Callable[..., Any]) -> Any:
 
     Used by `BaseAgent._execute_sdk` immediately before handing the tools to
     `agents.Agent(...)`. If the SDK is absent, returns the bare callable.
+
+    `strict_mode=False` is deliberate. Our tool params are Pydantic models with
+    `ConfigDict(extra="forbid")` (a hard project convention), which emits
+    `additionalProperties: false`; the SDK's strict-schema enforcement rejects
+    that inside a union/`anyOf` ("additionalProperties should not be set"). It
+    also keeps tool schemas compatible with non-OpenAI providers (MiMo / DeepSeek
+    / OpenAI-compatible proxies) whose function-calling doesn't honor OpenAI
+    strict mode. Validation still happens server-side in the tool body.
     """
     if sdk_function_tool is None:
         return tool
-    return sdk_function_tool(tool)
+    return sdk_function_tool(tool, strict_mode=False)
 
 
 def _try_import() -> None:

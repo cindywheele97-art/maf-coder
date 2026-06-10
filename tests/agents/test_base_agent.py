@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from maf_coder.agents import AgentResult, BaseAgent, TaskContext
 from maf_coder.agents.base import _RawResult
@@ -612,3 +613,46 @@ async def test_execute_sdk_passes_custom_endpoint_to_litellm(
     assert captured["model"] == "anthropic/mimo-v2.5-pro"
     assert captured["base_url"] == "https://mimo.example/anthropic"
     assert captured["api_key"] == "sk-fake-mimo"
+
+
+class _ExtraForbidArg(BaseModel):
+    """Mirrors the project convention: every model forbids extra fields, which
+    emits additionalProperties:false — the schema feature that broke the SDK."""
+
+    model_config = ConfigDict(extra="forbid")
+    x: int
+
+
+def _extra_forbid_tool(arg: _ExtraForbidArg, opt: _ExtraForbidArg | None = None) -> str:
+    """Do a thing.
+
+    Args:
+        arg: the required argument.
+        opt: an optional argument — the union/anyOf that triggered the crash.
+    """
+    return "ok"
+
+
+def test_wrap_for_sdk_tolerates_extra_forbid_model_in_union() -> None:
+    """Regression — caught by the first live shakedown.
+
+    Orchestrator tools crashed in wrap_for_sdk with 'additionalProperties should
+    not be set for object types': our tool params are Pydantic models with
+    ConfigDict(extra="forbid") (a hard project convention), which emits
+    additionalProperties:false, and the SDK's strict-schema enforcement rejects
+    that inside a union/anyOf. wrap_for_sdk must wrap such a tool WITHOUT raising
+    (it passes strict_mode=False). The unit suite never hit this because it
+    monkeypatches wrap_for_sdk to a passthrough; this test uses the real one.
+
+    The tool + model are module-level on purpose: the SDK resolves annotations
+    via get_type_hints against module globals (this file uses
+    `from __future__ import annotations`), exactly as the real tools do.
+    """
+    import maf_coder.agents._sdk as sdk
+
+    if not sdk.SDK_AVAILABLE:
+        pytest.skip("OpenAI Agents SDK not installed")
+
+    # Before the strict_mode=False fix this raised agents.exceptions.UserError.
+    wrapped = sdk.wrap_for_sdk(_extra_forbid_tool)
+    assert wrapped is not None
